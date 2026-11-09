@@ -1,0 +1,17 @@
+# .sdd/core/skills/fallback_list.yaml
+#
+# The skill catalogue handed to the task generator.
+#
+# Each entry declares one skill the generator may reference:
+#   name    — the exact string a task carries inside `## SKILLS_REQUIRED: [...]`.
+#   summary — what the skill covers, so the generator can tell when a task needs it.
+#             A summary may declare the skill mandatory for every task; the generator
+#             must then include that name on each task it emits.
+#
+# A skill listed here must exist under a discoverable root, or the sub-agent has
+# nothing to load when it is requested.
+
+# Add one entry per declared skill, in this format:
+#   - name: <skill-name>
+#     summary: <what the skill covers, so the generator can tell when a task needs it>
+skills: []

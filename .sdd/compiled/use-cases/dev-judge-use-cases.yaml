@@ -1,0 +1,18 @@
+# judge arbitration format. NOT the canonical report_status: a fixed relay block the
+# orchestrator forwards verbatim to the worker (§ SUBAGENT_COMMS : judge relays directive).
+use_cases:
+  receive_arbitration_input:
+    steps: []                  # the query/question, task file path, conflicting refs are given
+
+  decide_directive:
+    steps: []                  # reasoning step selecting the resolution aligned to spec+arch
+
+  judge_result:
+    emits: judge_result_block
+    block_template: |
+      ### JUDGE_ARBITRATION_RESULT
+      - **TASK_ID:** <task-id>
+      - **ISSUE:** <brief-summary-of-the-issue>
+      - **REASONING:** <concise-technical-justification>
+      #### DIRECTIVE_FOR_WORKER
+      <clear-step-by-step-instruction-for-the-worker-to-resume-execution>

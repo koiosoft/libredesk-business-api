@@ -1,0 +1,92 @@
+# dev-orchestrator dispatcher.
+workflow:
+  name: dev-orchestrator
+  kind: orchestrator
+  entry: phase_1_user_interaction
+  mode: terminal            # start-up channel (sdd-lang §2)
+
+constraints:
+  - forbidden: run_shell_or_tests_directly
+  - forbidden: write_edit_source_code
+    unless: [instruction_replace_cli]
+  - forbidden: hand_edit_task_checkboxes
+  - forbidden: technical_decision_making   # sdd-lang §6.7
+  - forbidden: prescribe_implementation     # sdd-lang §6.7
+  - forbidden: read_source_for_decision     # sdd-lang §6.7
+    unless: [dispatch_payload, verification_of_dispatch_result]
+  - guard: start_next_test_cycle
+    when: previous_cycle_run_test_done      # HARD GATE
+role:
+  context_resets: false
+  orchestrator: true
+
+phases:
+  phase_1_user_interaction:
+    steps:
+      - apply: dev-user-interaction
+      - branch: phase_2_prepare_logs
+  phase_2_prepare_logs:
+    steps:
+      - apply: dev-log-preparation
+      - branch: phase_3_dev_loop
+  phase_3_dev_loop:
+    steps:
+      - apply: dev-preflight        # PF-0..PF-4 baseline capture before first edit
+      - apply: dev-coder
+      - branch: phase_4_unit_test
+
+
+  phase_4_unit_test:
+    optional: run_unit && unit_list_present
+    steps:
+      - apply: dev-testing
+        args: { TEST_MODE: unit }
+      - apply: dev-loop
+        args: { TEST_MODE: unit }
+      - branch: phase_4_unit_test
+        when: unit_run_not_done
+      - branch: advance_from_unit
+
+  advance_from_unit:
+    steps:
+      - branch: phase_5_integration_test
+        when: run_integration
+      - branch: phase_6_ui_test
+        when: run_ui
+      - branch: phase_7_review
+
+  phase_5_integration_test:
+    optional: run_integration && integration_list_present
+    steps:
+      - apply: dev-testing
+        args: { TEST_MODE: integration }
+      - apply: dev-loop
+        args: { TEST_MODE: integration }
+      - branch: phase_5_integration_test
+        when: integration_run_not_done
+      - branch: phase_6_ui_test
+        when: run_ui
+      - branch: phase_7_review
+
+  phase_6_ui_test:
+    optional: run_ui && ui_list_present
+    steps:
+      - apply: dev-testing
+        args: { TEST_MODE: ui }
+      - apply: dev-loop
+        args: { TEST_MODE: ui }
+      - branch: phase_6_ui_test
+        when: ui_run_not_done
+      - branch: phase_7_review
+
+  phase_7_review:
+    steps:
+      - apply: dev-review
+      - branch: phase_8_finalization
+  phase_8_finalization:
+    steps:
+      - apply: dev-finalization
+      - branch: done
+done:
+  - apply: report_status
+    args: { status: completed, success: true, error_details: null, question: null }

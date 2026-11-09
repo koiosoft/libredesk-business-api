@@ -1,0 +1,13 @@
+channels:
+  terminal:
+    delivery: prompt
+    blocking: true
+    answer_source: tui
+
+  telegram:
+    delivery: assistant_text
+    blocking: true
+    blocking_mechanism: end_turn_resume_on_next_turn
+    answer_source: telegram
+    forbidden_tools:
+      - ask_user

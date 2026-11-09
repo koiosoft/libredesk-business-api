@@ -1,0 +1,58 @@
+# dev-doc-updater workflow (compiled).
+workflow:
+  name: dev-doc-updater-execution
+  entry: phase_d1_preparation
+
+constraints:
+  - forbidden: modify_source_code       # .py/.js/.java unless task explicitly asks docs
+  - forbidden: run_tests
+  - forbidden: run_git
+  - forbidden: modify_instruction_files  # orchestrator owns them
+  - forbidden: read_other_sdd_dirs
+    unless: [this_role_file, code_inspect_tools]
+  - guard: edit_file
+    when: target_is_doc                # precise LINE#HASH edits in doc files only
+
+role:
+  context_resets: true
+  reader_only: false
+
+phases:
+  phase_d1_preparation:
+    steps:
+      - apply: read_context_file
+        args: { path: ".sdd/core/SPEC.md" }
+      - apply: read_context_file
+        args: { path: ".sdd/core/CONVENTIONS.md" }
+      - apply: bootstrap_mcp_tools
+      - apply: index_repository_if_available
+      - apply: retrieval_search
+
+  phase_d2_receive_task:
+    steps:                              # protocol id (SPEC_UPDATE…) + exactly one task checkbox
+      - apply: read_task_instruction_ro    # read the instruction file without editing
+      - apply: read_task_body
+
+  phase_d2_execute:
+    steps:
+      - apply: read_doc_files
+      - apply: write_or_edit_docs
+      - branch: phase_blocked
+        when: need_context
+      - branch: final_report_completed
+
+  phase_blocked:
+    steps:
+      - apply: report_status
+        args: { status: blocked, question: "<concrete-doubt-or-missing-context>" }
+      - branch: final_report_blocked
+
+final_report_completed:
+  - apply: report_status
+    args: { status: completed, success: true, error_details: null, question: null }
+final_report_blocked:
+  - apply: report_status
+    args: { status: blocked, success: false, error_details: null, question: "<concrete-doubt-or-missing-context>" }
+final_report_error:
+  - apply: report_status
+    args: { status: error, success: false, error_details: "<human-readable-failure-explanation>", question: null }

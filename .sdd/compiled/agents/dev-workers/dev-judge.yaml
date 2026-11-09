@@ -1,0 +1,34 @@
+# dev-judge workflow (compiled; reader-only).
+workflow:
+  name: dev-judge-execution
+  entry: phase_receive_query
+
+constraints:
+  - forbidden: write_or_edit           # no source/test/task mutation
+  - forbidden: run_shell               # no bash/build/test execution
+  - forbidden: read_other_sdd_dirs
+    unless: [this_role_file, code_inspect_tools]
+
+role:
+  context_resets: true
+  reader_only: true
+
+phases:
+  phase_receive_query:
+    steps:
+      - apply: receive_arbitration_input   # question + task file path + conflicting code refs
+
+  phase_inspect:
+    steps:
+      - apply: retrieval_search            # read-only inspection cascade (Tier1..4)
+
+  phase_arbitrate:
+    steps:
+      - apply: decide_directive            # deep-reasoning resolution (spec + architecture)
+      - branch: final_arbitration
+
+final_arbitration:
+  - apply: judge_result                    # returns the fixed ### JUDGE_ARBITRATION_RESULT block
+
+output:
+  # No file writes: judge only relays its final structured result to the orchestrator.

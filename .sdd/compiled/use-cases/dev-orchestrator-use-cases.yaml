@@ -1,0 +1,113 @@
+use_cases:
+
+  read_sdd_instruction_frontmatter:
+    steps:
+      - command: read
+        args: { path: ".sdd/instructions/${PROTOCOL}.md", within: frontmatter }
+
+  read_task_list:
+    steps:
+      - command: read
+        args: { path: ".sdd/instructions/${PROTOCOL}.md" }
+      - command: extract_list
+        args: { section: "## Task List", unchecked_only: true }
+
+  read_test_list_of_mode:
+    steps:
+      - command: read
+        args: { path: ".sdd/instructions/${PROTOCOL}.md" }
+      - command: extract_list
+        args: { section: "${TEST_MODE} Test List", unchecked_only: true }
+
+
+  module_log_preparation:
+    steps:
+      - command: bash
+        args: { command: "agent-instructor workflow open --${PROTOCOL}" }
+
+  # Version drift is a precondition of cycle creation: workflow open compares
+  # the executable's version against the target project's .sdd/.init-version.
+  # If they differ it warns and asks the user to continue under their own risk.
+  # After confirmation it re-reads the executable version; if agent-instructor
+  # was upgraded during the prompt, it aborts and the command must be re-run.
+  workflow_open_version_drift:
+    precondition: "executable version != .sdd/.init-version"
+    steps:
+      - command: ask_user
+        args:
+          prompt: >-
+            .sdd/ initialized with v${INIT_VERSION}, executable is
+            v${EXECUTABLE_VERSION}. Continue under your own risk and
+            responsibility, or exit to upgrade agent-instructor and the
+            project (agent-instructor init) and re-run.
+          options: ["continue", "abort"]
+      - command: bash
+        args: { command: "agent-instructor workflow open --${PROTOCOL} --force" }
+        when: "user chose continue and executable version unchanged"
+      - command: abort
+        args: { reason: "declined, or executable upgraded during prompt; re-run" }
+        when: "user declined, or executable version changed during prompt"
+
+  module_dev_coder_mark:
+    steps:
+      - command: bash
+        args: { command: "agent-instructor workflow update --file <TASK_ID>.md --status completed" }
+
+  module_testing_loop:
+    steps:
+      - command: bash
+        args: { command: "agent-instructor workflow update --status completed <test-artifact> --mode ${TEST_MODE}" }
+
+  module_preflight_baseline:
+    when: LOG_DIR_resolvable
+    steps:
+      - launch: "${test_runner_agent_name}"
+        task: "Mode: baseline. Log file: ${baseline_failures_path}. Run all baseline tests."
+        async: true
+
+  module_finalization_regression_consolidate:    # F-3
+    steps:
+      - command: bash
+        args: { command: "<aggregate new_failing_files vs pre_existing per TEST_MODE from ${LOG_DIR}/test_results_*.txt>" }
+
+  module_finalization_followup_report:           # F-3
+    steps:
+      - command: write
+        args: { path: "${LOG_DIR}/followups.md", content: "<unresolved new regressions: FILE::TEST + ERROR + mode>" }
+
+  workflow_review_list:
+    steps:
+      - command: bash
+        args: { command: "agent-instructor workflow review list --json" }
+
+  workflow_review_mark:
+    steps:
+      - command: bash
+        args: { command: "agent-instructor workflow review mark --ack <ACK_ID> --status <approved|correction>" }
+
+  module_finalization:
+    steps:
+      - command: bash
+        args: { command: "agent-instructor workflow summary && agent-instructor workflow close" }
+
+  module_finalization_summary:
+    steps:
+      - command: bash
+        args: { command: "agent-instructor workflow summary [--json]" }
+
+  module_finalization_close:
+    steps:
+      - command: bash
+        args: { command: "agent-instructor workflow close" }
+
+  workflow_judge_record_decision:
+    steps:
+      - command: bash
+        args: { command: "agent-instructor workflow judge --task <TASK_ID> --issue \"${issue}\" --decision \"${directive}\"" }
+
+  resolve_worker_model:
+    steps:
+      - command: read
+        args: { path: ".sdd/compiled/models.yaml" }
+      - command: pick_model_by_priority
+        args: { role: "${picked_agent}", priority: 1 }      # rol lógico; resuelve name→resolved_agent_name y model→resolved_model

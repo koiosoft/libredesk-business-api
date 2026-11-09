@@ -1,0 +1,65 @@
+schema_runner_report:
+  output_schema:
+    type: object
+    additionalProperties: false
+    required: [status, success, summary, affected_files, error_details, question]
+    properties:
+      status:            { enum: [completed, error, blocked] }
+      success:           { type: boolean }
+      summary:           { type: string }
+      affected_files:    { type: array, items: { type: string } }
+      error_details:     { type: [string, null] }
+      question:          { type: [string, null] }
+      failing_test_files:
+        type: array
+        items: { type: string }
+      pre_existing_failing_files:
+        type: array
+        items: { type: string }
+      new_failing_files:
+        type: array
+        items: { type: string }
+      error_type: { type: [string, "null"] }
+
+use_cases:
+  index_repository_if_available:
+    steps:
+      - command: cbm_index_repository
+        optional: true
+  read_mode_context:
+    steps:
+      - command: read
+        args: { path: ".sdd/compiled/agents/test-workers/test-runner.yaml" }   # runner receives Mode in its task; no raw protocol doc
+  read_spec_environment:
+    steps:
+      - command: read
+        args: { path: ".sdd/core/SPEC.md" }
+  run_env_checks:
+    steps:
+      - command: bash
+        args: { command: "<health/env-checks-per-mode>" }
+  fix_environment:
+    steps:
+      - command: bash
+        args: { command: "<env-fix-commands-from-spec>" }
+  run_mode_test_command:
+    steps:
+      - command: bash
+        args: { command: "<mode-test-command-from-context>" }
+  parse_test_results:
+    steps: []                                 # parse total/passed/failed/errors + details
+  classify_against_baseline:
+    steps:
+      - command: read
+        args: { path: "${baseline_failures_path}" }
+        optional: true
+      - command: bash
+        args: { command: "<set-difference-on-FILE::TEST-ids>" }
+  write_log_summary:
+    steps:
+      - command: write
+        args: { path: "${log_file_path}", content: "<structured-test-summary>" }   # overwrite if exists
+  assemble_runner_outcome:
+    steps: []                                 # success:boolean + failing_test_files / error_type
+  runner_report:
+    emits: schema_runner_report.output_schema

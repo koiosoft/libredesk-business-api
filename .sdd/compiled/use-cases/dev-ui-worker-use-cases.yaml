@@ -1,0 +1,13 @@
+use_cases:
+  # dev-ui-worker specifics; shared cases + report_status come from sub-agent-use-cases.yaml.
+  ui_parse:
+    steps:
+      - command: bash
+        args:
+          command: 'agent-instructor tool ui-parse --input <code.html> --out .sdd/work/ast/<basename>.ast.md'
+          # SDD tooling (wraps flast), NOT application runtime execution.
+  run_shell_tooling:
+    steps:
+      - command: bash
+        args:
+          command: "<dependency-or-tooling-only-command>"   # pip install, flutter pub get, ...

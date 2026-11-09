@@ -1,0 +1,21 @@
+use_cases:
+  # test-worker (TEST_WORKER) specifics; shared/common from sub-agent-use-cases.yaml.
+  index_repository_if_available:
+    steps:
+      - command: cbm_index_repository
+        optional: true
+  parse_test_task:
+    steps: []                              # extract operation | mode | test_file_path
+  write_test_or_fix:
+    steps:    # BuildTest writes test; FixTest diagnoses and fixes target file(s)
+      - command: edit
+        args: { path: "<test_file_path or changed-file>", edits: [{ op: replace, pos: "<min>", lines: "<new>" }] }
+  run_scoped_test_validated:
+    note: reject bare/root/-k/wholesale sweep; if cannot scope to own file, do NOT run.
+    steps:
+      - command: bash
+        args: { command: "<targeted — own edited path (optional)::NodeID>" }
+  write_fix_justification:
+    steps:
+      - command: edit
+        args: { path: "${test_file_path}", edits: [{ op: replace, pos: "## Justification", lines: "<what/why/trade-offs>" }] }

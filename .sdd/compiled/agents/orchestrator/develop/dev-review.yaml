@@ -1,0 +1,78 @@
+# Orchestrator review module (deterministic): read-only per-ACK review over DOD; CLI owns markers.
+workflow:
+  name: dev-orchestrator-mod-review
+  kind: orchestrator_module
+  entry: review_ready
+
+phases:
+  review_ready:
+    steps:                              # R-1
+      - gate: review_ready
+        delivery: <channel>
+      - branch: find_next_task
+
+  find_next_task:                       # R-2
+    steps:
+      - apply: workflow_review_list
+      - branch: review_complete
+        when: no_pending_acks
+      - pick_next: "{ first TASK_ID with any [ ] ACK child and parent [x] (by explicit id) }"
+      - branch: launch_reviewer
+
+  launch_reviewer:
+    steps:
+      - launch: "${reviewer_agent_name}"
+        task: "Protocol: ${PROTOCOL}. TASK_ID: ${TASK_ID}. DOD: ${LOG_DIR}/dod/DOD-${TASK_ID}.md. Inspect all ACKs (read-only). Return canonical JSON w/ verdicts[] (APPROVED|REQUIRES_CORRECTION)."
+      - wait_result
+      - branch: arbitration_or_retry_reviewer
+        when: blocked
+      - branch: module_token_limits_scoped_reviewer
+        when: token_limit
+      - branch: process_verdicts
+
+  process_verdicts:
+    steps:                              # R-3/R-4/R-5/R-6 per verdict
+      - for_each_verdict:
+          - branch: mark_ack_approved
+            when: approved
+          - branch: record_followup_failed
+            when: correction_followup
+          - branch: classify_correction
+            when: correction_fixable
+      - branch: find_next_task           # after task fully approved
+
+  classify_correction:                  # R-5
+    steps:
+      - branch: fix_and_review
+        when: correction_is_mechanical
+      - branch: judge_arbitration
+        when: correction_is_design_ambiguity
+
+  judge_arbitration:                    # R-5, sdd-lang §6.7
+    steps:
+      - launch: "${judge_agent_name}"
+        task: "Ambigous REQUIRES_CORRECTION for TASK ${TASK_ID}. Reviewer reason: <error_details>. ACK text vs implementation disagreement. Return DIRECTIVE_FOR_WORKER."
+      - wait_result
+      - apply: workflow_judge_record_decision
+      - branch: fix_and_review
+
+  mark_ack_approved:                    # R-4
+    steps:
+      - bash: "agent-instructor workflow review mark --ack ${ACK_ID} --status approved"
+  record_followup_failed:              # R-6
+    steps:
+      - bash: "agent-instructor workflow update --file ${TASK_ID}.md --status failed"
+  fix_and_review:                       # R-5
+    steps:
+      - launch: "${task_role_agent_name}"
+        task: "Protocol:${PROTOCOL} TASK:${TASK_ID} file ${LOG_DIR}/tasks/TASK<NNN>.md. Fix per reviewer reasons."
+      - wait_result
+      - bash: "agent-instructor workflow update --file ${TASK_ID}.md --status completed"
+      - increment: REVIEW_ITERATION
+      - branch: ask_retry_skip_abort
+        when: iteration_ge_3
+      - branch: find_next_task
+
+  review_complete:
+    steps:
+      - branch: return_to_caller

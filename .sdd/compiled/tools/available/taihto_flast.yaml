@@ -1,0 +1,6 @@
+use_cases:
+  ui_parse_ast:
+    steps:
+      - command: bash
+        args:
+          command: "agent-instructor tool ui-parse --input <code.html> --out <ast>.ast.md"

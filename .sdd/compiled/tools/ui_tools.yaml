@@ -1,0 +1,16 @@
+# UI tooling strategy (prototype -> code)
+ui:
+  applicable: UI from HTML/Tailwind prototype when tool available (MUST follow)
+  tier0:                        # taihto-flast AST parse
+    trigger: HTML/Tailwind prototype -> UI code
+    access: cli
+    cost: minimal               # disk-based
+    note: AST persists to disk -> read() 0 reparse
+    steps:
+      - run: agent-instructor tool ui-parse --input <code.html> --out .sdd/work/ast/<basename>.ast.md
+
+  order:
+    - parse_ui_spec: apply tier0 when converting a prototype
+    - inspect_code: apply retrieval cascade (code_inspect_tools)
+    - implement: native edit (LINE#HASH)
+    - verify: compare component hierarchy vs extracted AST

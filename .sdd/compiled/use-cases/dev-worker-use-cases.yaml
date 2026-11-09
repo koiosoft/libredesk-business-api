@@ -1,0 +1,8 @@
+use_cases:
+  # dev-worker specific. Common cases + report_status: see sub-agent-use-cases.yaml
+  dependency_setup_only:
+    steps:
+      - command: bash
+        args:
+          command: "<dependency-or-tooling-only-command>"   # pip install, flutter pub get, ...
+          # must NOT be a test runner or entrypoint invocation of project source

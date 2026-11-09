@@ -1,0 +1,34 @@
+# retrieval cascade tiers + safe-edit strategy
+retrieval:
+  tiers:
+    - tier: 1
+      tool: pi_tools
+      trigger: exact-name / structural search
+      cost: low-moderate
+      steps: [find_replace, find_references, find_symbol, file_outline, replace_in_symbol, clipboard]
+      escalate: tier 2
+
+    - tier: 2
+      tool: jcodemunch
+      trigger: catalog / cross-ref / signature / semantic
+      access: mcp
+      cost: minimal
+      save: ~96% tokens get_symbol_source vs read
+      steps:
+        - { action: search_symbols, query: "<query>" }
+        - { action: get_symbol_source, repo: "<repo>", symbol_id: "<id>" }
+        - { action: get_ranked_context }
+        - { action: index_folder, path: "." }
+      browse: menu
+      escalate: tier 3
+
+    - tier: 3
+      tool: read
+      trigger: fallback full-file context
+      note: full raw file (last resort)
+      cost: high
+
+editing:
+  tool: edit                  # native pi-hashline-edit
+  rule: only LINE#HASH-anchored minimal replace; use replace_text for single occurrence
+  refactor: { action: plan_refactoring, apply_via: edit }

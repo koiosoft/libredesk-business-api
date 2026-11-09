@@ -1,0 +1,18 @@
+workflow:
+  name: dev-orchestrator-mod-preflight
+  kind: orchestrator_module
+  entry: preflight
+
+constraints:
+  - forbidden: run_shell_or_tests_directly
+
+phases:
+  preflight:
+    steps:
+      - apply: module_preflight_baseline          # PF-2
+      - wait_result                                # PF-2
+      - branch: done_module                        # PF-1
+  done_module: { }
+
+output:
+  baseline_failures_path: "${LOG_DIR}/baseline_failures.txt"   # PF-2b

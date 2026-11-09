@@ -1,0 +1,25 @@
+use_cases:
+  jcodemunch_search:
+    steps:
+      - command: mcp
+        args: { server: jcodemunch, tool: order, args: { action: search_symbols, args: { query: "<query>" } } }
+  jcodemunch_get_symbol:
+    steps:
+      - command: mcp
+        args: { server: jcodemunch, tool: order, args: { action: get_symbol_source, args: { repo: "<repo>", symbol_id: "<id>" } } }
+  jcodemunch_blast_radius:
+    steps:
+      - command: mcp
+        args: { server: jcodemunch, tool: order, args: { action: get_blast_radius, args: { query: "<query>" } } }
+  jcodemunch_plan_refactoring:
+    steps:
+      - command: mcp
+        args: { server: jcodemunch, tool: order, args: { action: plan_refactoring, args: { query: "<query>" } } }
+  jcodemunch_menu:
+    steps:
+      - command: mcp
+        args: { server: jcodemunch, tool: menu }
+  jcodemunch_route:
+    steps:
+      - command: mcp
+        args: { server: jcodemunch, tool: route, args: { task: "<task>" } }

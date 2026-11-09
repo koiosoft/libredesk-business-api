@@ -1,0 +1,72 @@
+# .sdd/context-policies/orchestrator/policies.yaml
+#
+# Phase 2: orchestrator catalogue is not implemented. This template exists so the
+# orchestrator directory can be created without breaking the engine.
+#
+# JEV (Jeux-Environnement-Victime) intervention policy for ORCHESTRATOR sessions.
+# It is the shape-only sibling of the phase-1 subagent catalogue shipped at
+# `.sdd/context-policies/subagent/policies.yaml`, which carries the eight options
+# every project starts from.
+#
+# `options: []` below is the deliverable, not a placeholder to fill in. The loader
+# in domain/jev/policy.py::validate_policies rejects an empty catalogue with a
+# PolicyValidationError that names this exact case ("an orchestrator-scope
+# catalogue with no options belongs to phase 2"), and INT008 asserts that error.
+# Do NOT add options here to make the document validate: the emptiness is the
+# tested behaviour of phase 1. When phase 2 implements the orchestrator
+# catalogue, it replaces this block — see the shape rules restated below.
+#
+# Shape rules enforced by domain/jev/policy.py::validate_policies:
+#   version "1.0" | scope subagent|orchestrator | window a positive integer
+#   instructions an object that carries a non-empty `question`
+#   options non-empty, at most classifier.max_options, ids unique, exactly one
+#           with action "none"; each option needs id/action/message/signal/criteria
+#   signal one of existence | activity | semantic | none
+#   action one of steer | kill_respawn | none
+# Project-specific additions go in custom/*.yaml (see custom/README.md); do not
+# edit this file to adapt it to one project — an overlay is durable, an edit here
+# is overwritten by the next `agent-instructor init`.
+version: "1.0"
+scope: "orchestrator"
+window: 5
+
+# The classification prompt is the dominant parameter of the engine, so it is
+# versioned here and tuned per cycle rather than improvised at call time. Only
+# `question` is populated in phase 1; the rest of the instruction object is left
+# for the phase-2 author to write against orchestrator behaviour.
+instructions:
+  question: "Identify the working pattern of the orchestrator."
+
+# Empty on purpose. See the header: phase 2 owns this catalogue, and the loader's
+# rejection of an empty one is the intended, tested behaviour for now.
+options: []
+
+project_overrides: {}
+
+suppressions: []
+
+generic_message: "The current strategy is not converging. Rethink the approach."
+
+# Tuned numbers, kept together because the validator checks their relationships
+# as a block: escalation_threshold must exceed min_trap_signal. A custom file
+# REPLACES this whole block, so it must restate every field it wants changed.
+# Values mirror the subagent template; `max_options` is the ceiling of the
+# MERGED catalogue, so it constrains whatever phase 2 adds here.
+classifier:
+  min_trap_signal: 0.52          # aggregate-signal alert threshold (measured)
+  escalation_threshold: 0.85     # kill_respawn after consecutive evaluations
+  escalation_evaluations: 2
+  min_probability: 0.40          # 4 sigma over the server's noise floor
+  generic_message_margin: 1.5    # winner-vs-runner-up margin that still counts as a tie
+  max_state_chars: 3200
+  max_options: 12
+  truncate_per_entry: 400
+
+trigger:
+  every_turns: 5
+  on_milestone: [task_end, test_run, file_change]
+  on_loop_police: true
+
+lookback:
+  default: 5
+  max_bytes: 65536

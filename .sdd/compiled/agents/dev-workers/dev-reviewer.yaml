@@ -1,0 +1,45 @@
+# dev-reviewer workflow (compiled; role-specific outputs).
+workflow:
+  name: dev-reviewer-execution
+  entry: phase_r1_preparation
+
+constraints:
+  - forbidden: write_or_edit           # reader_only
+  - forbidden: run_tests
+  - forbidden: run_git
+  - forbidden: modify_task_file
+  - forbidden: read_other_sdd_dirs
+    unless: [this_role_file, code_inspect_tools]
+  - forbidden: bootstrap_mcp_or_cbm    # reviewer: native inspection only
+
+role:
+  context_resets: true
+  reader_only: true
+
+phases:
+  phase_r1_preparation:
+    steps:
+      - apply: read_context_file
+        args: { path: ".sdd/core/SPEC.md" }
+      - apply: read_context_file
+        args: { path: ".sdd/core/CONVENTIONS.md" }
+      - apply: read_review_context
+
+  phase_r2_receive_dod:
+    steps:
+      - apply: read_dod
+        args: { dod_file: "${LOG_DIR}/dod/DOD-<TASK_ID>.md" }
+
+  phase_r2_review_all_acks:
+    steps:
+      - apply: inspect_evidence            # native search/read per criterion
+      - apply: decide_verdicts
+        args: { all_acks: true }          # evaluate every ACK in a single pass
+      - branch: final_review
+
+final_review:
+  - apply: verdict_report
+    args:                                 # returns common_schema_verdicts (see role dict)
+
+output:
+  reviewed_task: "${LOG_DIR}/tasks/TASK<NNN>.md"   # engine persists ## Review; reviewer never writes

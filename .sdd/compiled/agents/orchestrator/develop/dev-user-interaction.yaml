@@ -1,0 +1,27 @@
+workflow:
+  name: dev-orchestrator-mod-user-interaction
+  kind: orchestrator_module
+  entry: ui
+
+phases:
+  ui:
+    steps:
+      - gate: resolve_protocol
+        options: [FEATURE, DEBUG, SPEC_UPDATE, BOOTSTRAP]
+        delivery: <channel>
+      - apply: read_sdd_instruction_frontmatter
+      - validate:
+          protocol_matches, file_exists, frontmatter_required_fields_present
+      - gate: load_followups
+        when: followups_pending
+        options: [Retake now, Leave for later]
+        delivery: <channel>
+      - set_state: { MODE_AUTO, RUN_INTEGRATION, RUN_UI }
+      - gate: confirm_first_edit
+        when: before_first_edit
+        delivery: <channel>
+      - branch: done_module
+  done_module: { }
+
+output:
+  resolved: [PROTOCOL, MODE_AUTO, RUN_INTEGRATION, RUN_UI]

@@ -1,0 +1,31 @@
+workflow:
+  name: dev-orchestrator-mod-finalization
+  kind: orchestrator_module
+  entry: finalization
+
+phases:
+  finalization:
+    steps:
+      - apply: module_finalization_summary
+      - branch: fix_artifact_then_summary
+        when: any_incomplete
+      - apply: module_finalization_regression_consolidate    # F-3
+      - branch: regression_gate
+        when: unresolved_new_regressions_present              # false => skip to close_cycle (common case)
+      - branch: close_cycle
+
+  regression_gate:                                            # F-3 open human gate
+    steps:
+      - gate: acknowledge_regressions                       # open gate: acknowledge/record free human directive; fail-closed (§6.6/§6.7)
+        when: unresolved_new_regressions_present
+        delivery: <channel>
+      - apply: module_finalization_followup_report            # record accepted debt before closing
+      - branch: close_cycle
+
+  close_cycle:
+    steps:
+      - apply: module_finalization_close
+      - write_optional_log_summary
+      - notify: final_summary
+        delivery: <channel>
+      - branch: stop

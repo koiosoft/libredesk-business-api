@@ -1,0 +1,75 @@
+# Shared common use cases for worker roles (dev, ui, test, doc, judge? no — shared ops).
+# The canonical report_status SCHEMA no longer lives here: it moved to the global surface file
+#   .sdd/sub-agents/sub-agents-surface.yaml  ->  report_status.output_schema
+# This file only keeps the shared atomic TOOL operations (bootstrapping/retrieval/edits).
+# `report_status` is kept as a thin domain entry pointing at that surface definition.
+
+use_cases:
+  bootstrap_mcp_tools:
+    steps:
+      - command: cbm_connect
+      - command: mcp
+        args:
+          action: connect
+          server: jcodemunch
+
+  retrieval_search:
+    tiers:
+      - command: tier1_pi_tools
+        steps:
+          - command: grep
+            args: { pattern: "<exact-name-or-pattern>" }
+          - command: find
+            args: { pattern: "<target-glob>" }
+      - command: tier2_jcodemunch
+        steps:
+          - command: mcp
+            args:
+              tool: jcodemunch_search_symbols
+              args: { query: "<symbol-or-artifact-query>" }
+      - command: tier3_codebase_memory
+        steps:
+          - command: mcp
+            args:
+              tool: cbm_search_graph
+              args: { query: "<semantic-query>" }
+      - command: tier4_read_full_file
+        steps:
+          - command: read
+            args: { path: "<file-path>" }
+
+  read_task_file:
+    steps:
+      - command: read
+        args: { path: "${LOG_DIR}/tasks/TASK<NNN>.md" }
+
+  read_context_file:
+    steps:
+      - command: read
+        args: { path: "<context-file-path>" }
+
+  edit_file:
+    steps:
+      - command: edit
+        args:
+          path: "<file-path>"
+          edits:
+            - op: replace
+              pos: "<LINE#HASH>"
+              lines: "<replacement-lines>"
+
+  write_justification:
+    steps:
+      - command: edit
+        args:
+          path: "${LOG_DIR}/tasks/TASK<NNN>.md"
+          edits:
+            - op: replace
+              pos: "<Justification-anchor>"
+              lines: "<what-done / why / trade-offs>"
+
+  report_status:
+    # schema now in surface file (global): .sdd/sub-agents/sub-agents-surface.yaml → report_status.output_schema
+    emits: "@.sdd/sub-agents/sub-agents-surface.yaml/report_status.output_schema"
+    steps:
+      - self_check: "value is ONLY the canonical JSON (status/success/summary/affected_files/error_details/question)"

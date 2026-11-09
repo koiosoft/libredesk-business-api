@@ -1,0 +1,33 @@
+# Orchestrator token-limit recovery module (deterministic: delivery failure, not doubt/error).
+# Dispatched when wait_result signals "output token limit". Never increments correction iterations.
+workflow:
+  name: dev-orchestrator-mod-token-limits
+  kind: orchestrator_module
+  entry: classify
+
+phases:
+  classify:
+    steps:
+      - branch: next_model_relaunch
+        when: token_limit_signal
+      - branch: dev_coder_arbitration
+        when: doubt
+      - branch: ask_user_escalation
+        when: irrecoverable
+
+  next_model_relaunch:
+    steps:
+      - advance_one_priority: p1 → p2  per role from .sdd/compiled/models.yaml   # preserve thinking
+      - branch: ask_user_escalation
+        when: no_more_models
+      - relaunch_same_agent_next_model:                       # worker|test|reviewer per trigger
+          directive: "PREVIOUS attempt TOKEN-LIMITED on <prior>; partial work on disk; continue compact; end canonical JSON"
+          # reviewer: scoped relaunch only re-sending the current DOD-based task; not prior review context.
+      - branch: return_to_caller            # e.g. dev-coder completion / loop / review
+
+  ask_user_escalation:
+    steps:
+      - gate: escalation_decision       # J-4/J-5 fail-closed: partial work surfaced; never inferred
+        options: [Split-effort, Abort]
+        delivery: <channel>
+      - branch: return_to_caller

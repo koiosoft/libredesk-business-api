@@ -1,0 +1,55 @@
+workflow:
+  name: dev-orchestrator-mod-testing-loop
+  kind: orchestrator_module
+  entry: loop_start
+  state: { TEST_ITERATION_COUNT: 1 }
+
+phases:
+  loop_start:
+    steps:
+      - log_file_path: "${LOG_DIR}/test_results_${TEST_MODE}_iter${TEST_ITERATION_COUNT}.txt"
+      - branch: apply_run
+
+  apply_run:
+    steps:
+      - apply: dev-run
+      - wait_result
+      - branch: sync_success_marks_return
+        when: success
+      - branch: ask_user_fix_env
+        when: environment_error
+      - branch: maybe_correct
+        when: fail
+
+  maybe_correct:
+    steps:
+      - branch: ask_retry_skip_abort
+        when: iteration_ge_3
+      - branch: apply_fix
+  apply_fix:
+    steps:
+      - apply: dev-fix
+      - increment: TEST_ITERATION_COUNT
+      - branch: loop_start
+
+  sync_success_marks_return:
+    steps:
+      - apply: module_testing_loop
+      - branch: return_to_caller
+
+  ask_user_fix_env:
+    steps:
+      - gate: fix_environment
+        delivery: <channel>
+      - branch: loop_start
+  ask_retry_skip_abort:
+    steps:
+      - gate: retry_skip_abort
+        options: [Retry, Skip, Abort]
+        delivery: <channel>
+      - branch: loop_start
+        when: retry
+      - branch: return_to_caller
+        when: skip
+      - branch: stop
+        when: abort

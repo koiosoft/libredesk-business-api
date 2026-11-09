@@ -1,0 +1,21 @@
+tools:
+  - name: code_base_memory
+    doc: .sdd/compiled/tools/available/code_base_memory.yaml
+    status: enabled
+    access: mcp
+    note: reindex at session start; auto_watch disabled upstream
+  - name: jcodemunch
+    doc: .sdd/compiled/tools/available/jcodemunch.yaml
+    status: enabled
+    access: mcp
+    note: symbol-first; fallback to grep/read as last resort
+  - name: taihto_flast
+    doc: .sdd/compiled/tools/available/taihto_flast.yaml
+    status: enabled
+    access: cli
+    note: AST persisted (0 reparse); UI tasks only
+  - name: git_cai
+    doc: .sdd/compiled/tools/available/git_cai.yaml
+    status: disabled
+    access: none
+    note: flip status to enabled to activate the corresponding available/<name>.yaml

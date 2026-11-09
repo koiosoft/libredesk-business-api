@@ -1,0 +1,66 @@
+{
+    "include_extensions": [
+        ".py",
+        ".js",
+        ".ts",
+        ".tsx",
+        ".json",
+        ".md"
+    ],
+    "exclude_extensions": [
+        ".log",
+        ".tmp",
+        ".bak",
+        ".swp",
+        ".aider",
+        ".md",
+        ".txt",
+        ".json",
+        ".yaml"
+    ],
+    "exclude_dirs": [
+        "node_modules",
+        ".git",
+        "venv",
+        ".agentless-lite-venv",
+        "dist",
+        "build",
+        "__pycache__",
+        ".idea",
+        ".vscode",
+        ".venv",
+        ".pytest_cache",
+        ".agent-instructor",
+        ".aider.tags.cache.v4",
+        "migrations",
+        "scripts",
+        "logs",
+        "browser_data",
+        "tests",
+        "docs",
+        "utils"
+    ],
+    "max_file_size_bytes": 1048576,
+    "max_chars_for_embedding": 1500,
+    "top_n_files": 15,
+    "embedding_model": "BAAI/bge-small-en-v1.5",
+    "code_context_lines": 200,
+    "openai_base_url": "https://openrouter.ai/api/v1",
+    "openai_api_key": "",
+    "active_provider": "openrouter",
+    "active_harness": "pi",
+    "max_tokens": 32000,
+    "reasoning_max_tokens": 4000,
+    "reasoning_effort": "low",
+    "model_mapping": {
+        "openrouter": {
+            "default": "minimax/minimax-m3"
+        },
+        "ollama": {
+            "default": "llama3",
+            "llama3": "llama3",
+            "mistral": "mistral",
+            "gemma": "gemma"
+        }
+    }
+}

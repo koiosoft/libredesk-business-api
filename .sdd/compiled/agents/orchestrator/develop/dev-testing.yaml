@@ -1,0 +1,31 @@
+# Orchestrator testing phase (BuildTest only). Run when all ${TEST_MODE} tests pending.
+# it MUST hand off to the RunTest module (dev-loop) — a cycle is never 'done' just by writing tests.
+workflow:
+  name: dev-orchestrator-mod-testing
+  kind: orchestrator_module
+  entry: buildtest_loop
+  params: { TEST_MODE }
+
+phases:
+  buildtest_loop:
+    steps:
+      - wait_result: any_tracked
+      - apply: read_test_list_of_mode
+        args: { mode: "${TEST_MODE}" }
+      - branch: launch_buildtest
+        when: pending_unprocessed
+      - branch: mandatory_handoff_to_runtime
+
+  launch_buildtest:
+    steps:
+      - launch: "${test_writer_agent_name}"
+        task: "Mode: ${TEST_MODE}. Operation: BuildTest. Test file: ${LOG_DIR}/${TEST_ID}.md"
+      - branch: buildtest_loop                       # process next pending (T-1)
+
+  mandatory_handoff_to_runtime:
+    steps:
+      - branch: invoke_dev_loop                        # MUST now run the suite (see dev-orchestrator)
+  invoke_dev_loop:
+    steps:
+      - apply: dev-loop
+        args: { TEST_MODE: "${TEST_MODE}" }            # dev-orchestrator also mirrors; idempotent guard

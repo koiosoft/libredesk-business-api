@@ -1,0 +1,176 @@
+# .sdd/context-policies/subagent/policies.yaml
+#
+# JEV (Jeux-Environnement-Victime) intervention policy for SUB-AGENT sessions.
+# This is the shipped phase-1 catalogue: the base document every project starts
+# from, loaded by `agent-instructor session evaluate --policies
+# .sdd/context-policies/subagent/`.
+#
+# Shape rules enforced by domain/jev/policy.py::validate_policies:
+#   version "1.0" | scope subagent|orchestrator | window a positive integer
+#   instructions an object that carries a non-empty `question`
+#   options non-empty, at most classifier.max_options, ids unique, exactly one
+#           with action "none"; each option needs id/action/message/signal/criteria
+#   signal one of existence | activity | semantic | none
+#   action one of steer | kill_respawn | none
+# Project-specific additions go in custom/*.yaml (see custom/README.md); do not
+# edit this file to adapt it to one project — an overlay is durable, an edit here
+# is overwritten by the next `agent-instructor init`.
+version: "1.0"
+scope: "subagent"
+window: 5
+
+# The classification prompt is the dominant parameter of the engine (it moves the
+# aggregate signal far more than temperature does), so it is versioned here and
+# tuned per cycle rather than improvised at call time. `not_trap` names the
+# healthy behaviours the model must NOT report as a sand trap.
+instructions:
+  question: "Identify the working pattern of the sub-agent."
+  focus: "Compare what it did with what the task required; do not judge code quality."
+  what_is_trap: "Work that cannot conclude: it inspects, verifies or refines without any action changing what it is going to write, and without reaching a verdict."
+  stopping_criterion: "A healthy agent stops inspecting once it has enough to act; one in a sand trap has no such threshold."
+  not_trap:
+    - "Reading the file it is about to edit"
+    - "Running a test or a command to verify"
+    - "Fixing an error caused by an external or pre-existing failure; this does not include repairing corruption the agent itself introduced"
+    - "Gathering context at the start of a new task"
+    - "Investigating an unknown API before using it"
+
+# Eight options: three existence, two semantic, two activity, one clean exit.
+# `criteria` is a structured object (`what` / `not_for` / `examples`) because
+# measured separation between a string and a structured criteria favours the
+# object on every metric that matters. The engine forwards the object verbatim
+# to the classifier, so its keys are the author's contract, not the engine's.
+options:
+  # --- EXISTENCE (measured precision 4/4) ---
+  - id: "nonexistent_symbol"
+    action: "steer"
+    signal: "existence"
+    message: "You introduced a symbol that does not exist in the tree."
+    criteria:
+      what: "Introduces an identifier (class, method, namespace, hook) absent from every definition in the repository"
+      not_for: "Using a real API of a dependency present in the project"
+      examples:
+        - "use Drupal\\Core\\Render\\CacheableMetadata (the real one is Drupal\\Core\\Cache\\CacheableMetadata)"
+
+  - id: "nonexistent_config_path"
+    action: "steer"
+    signal: "existence"
+    message: "You reference a configuration path that does not exist."
+    criteria:
+      what: "References a config path with no corresponding file"
+      not_for: "Referencing a path that exists but is empty"
+      examples:
+        - "mymodule.settings with no config/sync/mymodule.settings.yml"
+
+  - id: "invented_api"
+    action: "steer"
+    signal: "existence"
+    message: "You are calling an API that is not present in the project code."
+    criteria:
+      what: "Invokes a method or service that is absent from the project tree"
+      not_for: "Invoking a method of a real dependency"
+      examples:
+        - "$element->preRenderElements() when no such method exists"
+
+  # --- SEMANTIC ---
+  - id: "review_trap"
+    action: "steer"
+    signal: "semantic"
+    message: "You are reviewing without reaching a conclusion. Stop and decide."
+    criteria:
+      what: "Accumulates inspections without producing a change or a verdict"
+      not_for: "Reading the file it is about to edit; verifying a result once"
+      examples:
+        - "grep, sed, cat in a loop over the same file without writing anything"
+
+  - id: "edit_thrash"
+    action: "steer"
+    signal: "semantic"
+    message: "You are editing by undoing previous changes."
+    criteria:
+      what: "Redoes an edit it had already made, or reverts and reapplies the same change"
+      not_for: "Fixing an error detected after a test failure"
+      examples:
+        - "Adds a class, removes it, adds it again"
+
+  # --- ACTIVITY (measured precision 1/3: secondary, use with caution) ---
+  - id: "doc_reading_loop"
+    action: "steer"
+    signal: "activity"
+    message: "You are accumulating reads without changing your decision."
+    criteria:
+      what: "Reads documentation or dependency code without its conclusion changing"
+      not_for: "Investigating an unknown API for the first time before using it"
+      examples:
+        - "Re-reads the same document three times"
+
+  - id: "core_read_exhaustion"
+    action: "steer"
+    signal: "activity"
+    message: "You are reading dependency code repeatedly. It is not needed."
+    criteria:
+      what: "Inspects dependency code repeatedly for something the spec already answers"
+      not_for: "Reading the project's own code to decide what to write"
+      examples:
+        - "54 reads of web/core to decide a YAML whose shape the spec already defines"
+
+  # --- CLEAN EXIT ---
+  # Exactly one option carries action "none". It keeps signal "semantic" on
+  # purpose: the aggregate trap signal is summed over the options whose signal
+  # is not "none", and the thresholds below were calibrated with the clean exit
+  # contributing to that sum. Tag it "none" only if you also re-measure them.
+  - id: "nothing"
+    action: "none"
+    signal: "semantic"
+    message: ""
+    criteria:
+      what: "The agent progresses normally; its actions change what it is going to produce"
+      not_for: "Marking as clean work that is not advancing"
+      examples:
+        - "Reads a file, edits it, runs the test, fixes"
+
+# Deterministic rules applied AFTER classification, in this precedence order:
+# suppression -> override -> action "none" -> normal option. Example: escalate
+# repeated core edits to a respawn whenever they land under core/**.
+project_overrides:
+  active_rules:
+    - target_option: "edit_thrash"
+      target_path_pattern: "core/**"
+      action: "kill_respawn"
+      message: "You are editing core repeatedly without converging."
+
+# Suppress an option when the trace shows the work was authorised. Example: a
+# deliberate vendor scan is not dependency-read exhaustion.
+suppressions:
+  - id: "authorized_vendor_scan"
+    when_option: "core_read_exhaustion"
+    and_path_matches: "vendor/**"
+    reason: "Authorized dependency scan"
+
+# Used when the signal crosses the threshold but no single option wins clearly.
+generic_message: "The current strategy is not converging. Rethink the approach."
+
+# Tuned numbers, kept together because the validator checks their relationships
+# as a block: escalation_threshold must exceed min_trap_signal. A custom file
+# REPLACES this whole block, so it must restate every field it wants changed.
+classifier:
+  min_trap_signal: 0.52          # aggregate-signal alert threshold (measured)
+  escalation_threshold: 0.85     # kill_respawn after consecutive evaluations
+  escalation_evaluations: 2
+  min_probability: 0.40          # 4 sigma over the server's noise floor
+  generic_message_margin: 1.5    # winner-vs-runner-up margin that still counts as a tie
+  max_state_chars: 3200
+  max_options: 12                # ceiling of the MERGED catalogue, not of this file
+  truncate_per_entry: 400
+
+trigger:
+  every_turns: 5
+  on_milestone: [task_end, test_run, file_change]
+  on_loop_police: true
+  # Minimum minutes between two `session evaluate` invocations for one session,
+  # even when the log changed. 0 disables the limit. Hook-owned, not read by the
+  # CLI; 3 when absent or invalid.
+  min_interval_minutes: 3
+
+# No `lookback` block: `window` above is the only control of how many turns are
+# evaluated. A leftover `lookback` block is ignored (with a deprecation warning).

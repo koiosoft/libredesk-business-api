@@ -1,0 +1,21 @@
+use_cases:
+  cbm_index_repository:
+    steps:
+      - command: cbm_index_repository
+        args: { repo_path: "<path>" }
+  cbm_trace_path:
+    steps:
+      - command: cbm_trace_path
+        args: { project: "<project>", function_name: "<symbol>" }
+  cbm_get_code_snippet:
+    steps:
+      - command: cbm_get_code_snippet
+        args: { project: "<project>", qualified_name: "<qname>" }
+  cbm_get_architecture:
+    steps:
+      - command: cbm_get_architecture
+        args: { project: "<project>" }
+  cbm_query_graph:
+    steps:
+      - command: cbm_query_graph
+        args: { project: "<project>", query: "<cypher>" }

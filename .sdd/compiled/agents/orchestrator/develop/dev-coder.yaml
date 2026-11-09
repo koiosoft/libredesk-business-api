@@ -1,0 +1,67 @@
+# Orchestrator implementation module (deterministic): loop over the Task List.
+# Dispatch worker by semantic intent; advance marks ONLY via CLI. No hand-flipping.
+workflow:
+  name: dev-orchestrator-mod-dev-coder
+  kind: orchestrator_module
+  entry: dev_loop
+
+phases:
+  dev_loop:
+    steps:
+      - wait_result: any_tracked
+      - branch: completion
+        when: subagent_completed
+      - apply: read_task_list
+      - branch: launch_impl
+        when: have_unchecked
+      - branch: phase_done
+
+  launch_impl:                        # W-3
+    steps:
+      - pick_role_by_intent:          # semantic: core/logic -> sdd-worker ; UI/components -> sdd-ui-worker
+          { sdd_worker: domain_logic_backend, sdd_ui_worker: ui_components_screens }
+      - apply: resolve_worker_model
+        args: { role: "${picked_agent}" }
+      - launch: "${resolved_agent_name}"
+        model: "${resolved_model}"
+        task: "Task file: ${LOG_DIR}/tasks/TASK<NNN>.md. Execute it. MANDATORY: follow [ASSET:...] markers before implementing; return technical justification in the task file."
+      - branch: dev_loop
+
+  completion:                         # W-2
+    steps:
+      - wait_result_parse_json
+      - branch: mark_completed
+        when: completed
+      - branch: mark_failed
+        when: failed
+      - branch: arbitration
+        when: blocked
+      - branch: apply_token_limits
+        when: token_limit
+
+  arbitration:                        # W-2, sdd-lang §6.7
+    steps:
+      - launch: "${judge_agent_name}"
+        task: "Arbitrate worker doubt for TASK ${TASK_ID}. Issue: ${question}. Files: ${affected_files}. MODE_AUTO. Return DIRECTIVE_FOR_WORKER."
+      - wait_result
+      - apply: workflow_judge_record_decision
+      - branch: resume_worker
+
+  resume_worker:                     # J-4
+    steps:
+      - resume: "${agent_id}"
+        directive: "${DIRECTIVE_FOR_WORKER}"
+      - branch: dev_loop
+
+  mark_completed:
+    steps:
+      - bash: "agent-instructor workflow update --file ${TASK_ID}.md --status completed"   # flips [x] + INDEX
+      - branch: dev_loop
+  mark_failed:
+    steps:
+      - bash: "agent-instructor workflow update --file ${TASK_ID}.md --status failed"
+      - branch: dev_loop
+
+  phase_done:
+    steps:
+      - branch: return_to_caller

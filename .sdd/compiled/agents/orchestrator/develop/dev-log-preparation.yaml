@@ -1,0 +1,34 @@
+workflow:
+  name: dev-orchestrator-mod-log-preparation
+  kind: orchestrator_module
+  entry: open
+
+phases:
+  open:
+    steps:
+      - resolve_flag: { FEATURE: --feature, DEBUG: --debug, CORE-SPECS: --core-specs, BOOTSTRAP: --bootstrap }
+      - set_state: { RUN_UNIT, RUN_INTEGRATION, RUN_UI, RUN_DOD }   # affirmative-only; absent/false reads as false
+      - apply: module_log_preparation
+      - capture: LOG_DIR
+      - branch: return_to_caller
+        when: binding_ok
+      - branch: reindex
+        when: binding_mismatch
+
+  reindex:
+    steps:
+      - apply: module_log_preparation
+      - branch: return_to_caller
+
+# Artifact layout resolved by module_log_preparation (cycle-relative paths; see
+# protocols/agents/orchestrator/develop/LOG_PREPARATION.md L-1/L-1b). Folders are created only
+# for seeded categories: UNIT/INT/UIT/DOD are each gated by their run_* flag AND a populated
+# section; TASK is the single ungated category and its assets ride along under tasks/assets/.
+output:
+  cycle_root: "${LOG_DIR}"
+  tasks_dir: "${LOG_DIR}/tasks"            # TASK<NNN>.md (always, ungated)
+  assets_dir: "${LOG_DIR}/tasks/assets"    # TASK<NNN>_spec.md referenced by [ASSET: ...]
+  unit_tests_dir: "${LOG_DIR}/tests/unit"              # gated by run_unit
+  integration_tests_dir: "${LOG_DIR}/tests/integration" # gated by run_integration
+  ui_tests_dir: "${LOG_DIR}/tests/ui"                  # gated by run_ui
+  dod_dir: "${LOG_DIR}/dod"                # gated by run_dod; DOD-TASK<NNN>.md

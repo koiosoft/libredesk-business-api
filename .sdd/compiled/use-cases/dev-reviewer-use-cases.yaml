@@ -1,0 +1,46 @@
+schema_report_verdicts:
+  output_schema:
+    type: object
+    additionalProperties: false
+    required: [status, success, summary, verdicts, affected_files, error_details, question]
+    properties:
+      status:  { enum: [completed, blocked, error] }
+      success: { type: boolean }
+      summary: { type: string }
+      # reviewer extension (§ SUBAGENT_COMMS): one entry per ACK
+      verdicts:
+        type: array
+        items:
+          type: object
+          required: [ack_id, status, evidence]
+          properties:
+            ack_id:   { type: string }
+            status:   { enum: [approved, rejected, blocked] }
+            evidence: { type: string }
+      affected_files: { type: array, items: { type: string } }
+      error_details: { type: [string, null] }
+      question:      { type: [string, null] }
+
+use_cases:
+  read_review_context:
+    steps:
+      - command: read
+        args: { path: ".sdd/compiled/agents/dev-workers/dev-reviewer.yaml" }
+
+  read_dod:
+    steps:
+      - command: read
+        args: { path: "${LOG_DIR}/dod/DOD-<TASK_ID>.md" }   # reviewer ONLY opens the DOD
+
+  inspect_evidence:
+    steps:
+      - command: read          # native inspection; no cbm/jcodemunch bootstrap for reviewer
+        args: { path: "<implementation-or-evidence-file>" }
+      - command: find_symbol
+        args: { name: "<symbol>" }
+
+  decide_verdicts:
+    steps: []                  # reasoning step: emit one verdict per ACK in a single pass
+
+  verdict_report:
+    emits: schema_report_verdicts.output_schema

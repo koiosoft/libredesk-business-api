@@ -1,0 +1,114 @@
+subagents:
+  sdd-doc-updater:
+    name: compiled.sdd-doc-updater
+    model_options:
+      - name: "default"
+        model: "deepseek/deepseek-flash"
+        priority: 1
+        thinking: "off"
+      - name: "cheap"
+        model: "openrouter/deepseek/deepseek-v4-flash"
+        priority: 2
+        thinking: "off"
+      - name: "fallback"
+        model: "alibaba-token-intl/deepseek-v4-flash-0731"
+        priority: 3
+        thinking: "off"
+
+
+  sdd-worker:
+    name: compiled.sdd-worker
+    model_options:
+      - name: "default"
+        model: "alibaba-token-intl/qwen3.8-flash"
+        priority: 1
+        thinking: "off"
+      - name: "cheap"
+        model: "deepseek/deepseek-flash"
+        priority: 2
+        thinking: "off"
+      - name: "fallback"
+        model: "openrouter/deepseek/deepseek-flash"
+        priority: 3
+        thinking: "off"
+
+  sdd-ui-worker:
+    name: compiled.sdd-ui-worker
+    model_options:
+      - name: "default"
+        model: "alibaba-token-intl/qwen3.8-flash"
+        priority: 1
+        thinking: "off"
+      - name: "cheap"
+        model: "deepseek/deepseek-flash"
+        priority: 2
+        thinking: "off"
+      - name: "fallback"
+        model: "openrouter/deepseek/deepseek-flash"
+        priority: 3
+        thinking: "off"
+
+
+  test-runner:
+    name: compiled.test-runner
+    model_options:
+      - name: "default"
+        model: "deepseek/deepseek-flash"
+        priority: 1
+        thinking: "off"
+      - name: "cheap"
+        model: "openrouter/deepseek/deepseek-v4-flash"
+        priority: 2
+        thinking: "off"
+      - name: "fallback"
+        model: "alibaba-token-intl/deepseek-v4-flash-0731"
+        priority: 3
+        thinking: "off"
+
+  test-writer:
+    name: compiled.test-writer
+    model_options:
+      - name: "default"
+        model: "deepseek/deepseek-flash"
+        priority: 1
+        thinking: "off"
+      - name: "cheap"
+        model: "openrouter/deepseek/deepseek-v4-flash"
+        priority: 2
+        thinking: "off"
+      - name: "fallback"
+        model: "alibaba-token-intl/deepseek-v4-flash-0731"
+        priority: 3
+        thinking: "off"
+
+  sdd-reviewer:
+    name: compiled.sdd-reviewer
+    model_options:
+      - name: "default"
+        model: "deepseek/deepseek-flash"
+        priority: 1
+        thinking: "off"
+      - name: "cheap"
+        model: "openrouter/deepseek/deepseek-v4-flash"
+        priority: 2
+        thinking: "off"
+      - name: "fallback"
+        model: "alibaba-token-intl/deepseek-v4-flash-0731"
+        priority: 3
+        thinking: "off"
+
+  sdd-judge:
+    name: compiled.sdd-judge
+    model_options:
+      - name: "default"
+        model: "antigravity/gemini-3.8-flash"
+        priority: 1
+        thinking: "high"
+      - name: "cheap"
+        model: "deepseek/deepseek-flash"
+        priority: 2
+        thinking: "high"
+      - name: "fallback"
+        model: "openrouter/deepseek/deepseek-v4-flash"
+        priority: 3
+        thinking: "high"

@@ -1,0 +1,60 @@
+# test-runner workflow (compiled; role-specific outputs)
+workflow:
+  name: test-runner-execution
+  entry: phase_preparation
+
+constraints:
+  - forbidden: modify_source_or_test     # strictly verify env, run tests, report
+  - forbidden: run_without_mode          # always a specific mode (unit/integration/ui/baseline)
+  - forbidden: run_git
+  - forbidden: use_grep_find_when_cbm
+  - forbidden: read_or_write_out_of_scope
+
+role:
+  context_resets: true
+  reader_only: true                       # never edits code/tests; only writes the log summary
+
+phases:
+  phase_preparation:
+    steps:
+      - apply: read_context_file
+        args: { path: ".sdd/core/SPEC.md" }
+      - apply: read_context_file
+        args: { path: ".sdd/core/CONVENTIONS.md" }
+      - apply: bootstrap_mcp_tools
+      - apply: index_repository_if_available
+      - apply: retrieval_search
+
+  phase_load_mode_context:
+    steps:
+      - apply: read_mode_context     # per-mode context (unit/integration/ui) built into the task
+
+  phase_verify_environment:
+    steps:
+      - apply: read_spec_environment
+      - apply: run_env_checks
+      - branch: final_env_error
+        when: env_unfixable
+      - apply: fix_environment
+
+  phase_run_tests:
+    steps:
+      - apply: run_mode_test_command
+      - apply: parse_test_results            # total/passed/failed/errors/duration/details
+      - apply: classify_against_baseline    # TR-3c
+      - apply: write_log_summary            # structured summary -> log_file_path (overwrite)
+
+  phase_report:
+    steps:
+      - apply: assemble_runner_outcome      # success true | false + failing_test_files / error_type
+      - branch: final_runner
+
+final_runner:
+  - apply: runner_report                    # emits schema_role (report_status + failing_test_files / error_type)
+
+final_env_error:
+  - apply: report_status
+    args: { status: error, success: false, error_details: "environment", question: null }
+
+output:
+  log_file: "${log_file_path}"             # structural test summary log

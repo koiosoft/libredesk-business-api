@@ -1,0 +1,56 @@
+# test-worker workflow (compiled; apply/branch only)
+workflow:
+  name: test-worker-execution
+  entry: phase_preparation
+
+constraints:
+  - forbidden: read_other_sdd_dirs
+    unless: [this_role_file, code_inspect_tools, mode_context_tests]   # mode context files wk owns
+  - forbidden: run_full_test_suite        # only orchestrator authorizes broad run
+  - guard: run_scoped_test
+    when: target_in_edited_files          # never root / -k / wholesale sweep
+  - forbidden: run_git
+  - forbidden: touch_status_field         # orchestrator updates Status, never the worker
+
+role:
+  context_resets: true
+  reader_only: false
+
+phases:
+  phase_preparation:
+    steps:
+      - apply: read_context_file
+        args: { path: ".sdd/core/SPEC.md" }
+      - apply: read_context_file
+        args: { path: ".sdd/core/CONVENTIONS.md" }
+      - apply: bootstrap_mcp_tools
+      - apply: retrieval_search
+      - apply: index_repository_if_available
+
+  phase_receive_task:
+    steps:
+      - apply: parse_test_task            # extract operation | mode | test_file_path
+
+  phase_execute:
+    steps:
+      - apply: write_test_or_fix          # BuildTest→write test; FixTest→diagnose+fix target path
+      - apply: run_scoped_test_validated  # only own edited path(s) (± optional ::NodeID)
+      - branch: success
+
+  success:
+    steps:
+      - apply: write_fix_justification    # into test file Justification; never Status
+      - branch: final_report_completed
+
+final_report_completed:
+  - apply: report_status
+    args: { status: completed, success: true, error_details: null, question: null }
+final_report_error:
+  - apply: report_status
+    args: { status: error, success: false, error_details: "<human-readable-failure-explanation>", question: null }
+final_report_blocked:
+  - apply: report_status
+    args: { status: blocked, success: false, error_details: null, question: "<concrete-doubt-or-missing-context>" }
+
+output:
+  test_file: "${LOG_DIR}/tests/<type>/<PREFIX><NNN>.md"   # seeded only for run_unit/run_integration/run_ui personas

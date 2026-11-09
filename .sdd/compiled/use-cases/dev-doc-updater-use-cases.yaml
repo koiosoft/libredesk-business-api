@@ -1,0 +1,22 @@
+use_cases:
+  # dev-doc-updater specifics; common/shared cases come from sub-agent-use-cases.yaml.
+  index_repository_if_available:
+    steps:
+      - command: cbm_index_repository
+        optional: true
+  read_task_instruction_ro:
+    steps:
+      - command: read
+        args: { path: ".sdd/instructions/${PROTOCOL}.md" }   # read only; never modify
+  read_task_body:
+    steps: []                                     # the single checkbox task is in the prompt
+  read_doc_files:
+    steps:
+      - command: read
+        args: { path: "<doc-or-definition-file>" }
+  write_or_edit_docs:
+    steps:
+      - command: read                            # find references/cross-links before edits
+        args: { path: "<affected/definition-file>" }
+      - command: edit                             # precise LINE#HASH replace; never dump whole file
+        args: { path: "<doc-file>", edits: [{ op: replace, pos: "<min>", lines: "<new>" }] }

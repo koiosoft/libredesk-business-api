@@ -1,0 +1,6 @@
+use_cases:
+  git_cai_print:
+    steps:
+      - command: bash
+        args:
+          command: "git cai --print"
