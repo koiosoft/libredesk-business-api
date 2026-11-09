@@ -1,0 +1,14 @@
+{
+  "name": "agent-instructor-harness-pi",
+  "version": "0.0.0",
+  "private": true,
+  "description": "TypeScript tooling for the harness pi template (extensions under extensions/). This package.json accompanies the TEMPLATE, not the consuming project.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit --strict"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^1.3.0",
+    "typescript": "^5.6.0"
+  }
+}

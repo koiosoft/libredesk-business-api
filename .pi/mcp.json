@@ -1,0 +1,24 @@
+{
+    "mcpServers": {
+        "jcodemunch": {
+            "command": "uvx",
+            "args": [
+                "jcodemunch-mcp"
+            ],
+            "toolExposure": {
+                "jcodemunch_guide": "direct",
+                "order": "direct",
+                "menu": "direct",
+                "cbm_index_repository": "direct"
+            }
+        },
+        "libredesk-docs": {
+            "url": "https://docs.libredesk.io/mcp",
+            "exposure": "deferred"
+        },
+        "kanboard": {
+            "url": "https://kanboard.koiosoft.com/?controller=ModelContextProtocolController&action=handle&plugin=ModelContextProtocol&token=43934b19b13ff33442af55f57aa1d6f995290550a77adf8bf935b57678bf5dc2",
+            "directTools": true
+        }
+    }
+}
