@@ -1,0 +1,35 @@
+{
+  "name": "production",
+  "values": [
+    {
+      "key": "HUB_URL",
+      "value": "http://192.168.1.107:8091",
+      "enabled": true
+    },
+    {
+      "key": "LIBREDESK_URL",
+      "value": "https://customer-hub.koiosoft.com",
+      "enabled": true
+    },
+    {
+      "key": "HUB_API_KEY",
+      "value": "<copiar del servidor: docker exec koiosoft_api_hub printenv HUB_API_KEY>",
+      "enabled": true,
+      "description": "Debe coincidir con el contenedor: docker exec koiosoft_api_hub printenv HUB_API_KEY"
+    },
+    {
+      "key": "WEBHOOK_SECRET",
+      "value": "<copiar de .env.production: HUB_LIBREDESK_WEBHOOK_SECRET>",
+      "enabled": true,
+      "description": "HUB_LIBREDESK_WEBHOOK_SECRET; igual al campo Secret del webhook en LibreDesk"
+    },
+    {
+      "key": "CONV_UUID",
+      "value": "",
+      "enabled": true,
+      "description": "UUID objetivo. Vac\u00edo a prop\u00f3sito: se rellena tras elegirlo conscientemente."
+    }
+  ],
+  "_postman_variable_scope": "environment",
+  "_note": "Acceso directo por LAN a 192.168.1.107. Copiar a environment.production.json (gitignored)."
+}

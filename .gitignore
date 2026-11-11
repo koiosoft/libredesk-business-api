@@ -220,3 +220,8 @@ __marimo__/
 .streamlit/secrets.toml
 .vscode
 .config/cai/tokens.yml
+
+# Postman environments carry credentials
+postman/environment.*.json
+!postman/environment.*.example.json
+.DS_Store

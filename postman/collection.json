@@ -1,0 +1,709 @@
+{
+  "info": {
+    "name": "libredesk-business-api — validación",
+    "_postman_id": "149924a1-1991-4116-91e5-2addb6b0373f",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Pruebas del plano de control. Variables: HUB_URL, HUB_API_KEY, WEBHOOK_SECRET, CONV_UUID."
+  },
+  "variable": [
+    {
+      "key": "HUB_URL",
+      "value": "http://127.0.0.1:8091"
+    },
+    {
+      "key": "LIBREDESK_URL",
+      "value": "http://localhost:8090"
+    },
+    {
+      "key": "CONV_UUID",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "00 health (sin auth)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{HUB_URL}}/healthz",
+          "host": [
+            "{{HUB_URL}}"
+          ],
+          "path": [
+            "healthz"
+          ],
+          "query": []
+        },
+        "description": "Vida del servicio. Sin autenticación ni filtro de IP. Primera prueba tras desplegar."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "pm.test('status ok', () => pm.expect(pm.response.json().status).to.eql('ok'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "01 whoami (IP que ve el servicio)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Api-Key",
+            "value": "{{HUB_API_KEY}}"
+          }
+        ],
+        "url": {
+          "raw": "{{HUB_URL}}/meta/whoami",
+          "host": [
+            "{{HUB_URL}}"
+          ],
+          "path": [
+            "meta",
+            "whoami"
+          ],
+          "query": []
+        },
+        "description": "Devuelve client_ip: la dirección REAL del handshake TCP. Con este dato se completa HUB_ALLOWED_IPS sin adivinar."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const d=pm.response.json(); console.log('client_ip observada =', d.client_ip);",
+              "pm.test('tiene client_ip', () => pm.expect(d).to.have.property('client_ip'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "02 config efectiva",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Api-Key",
+            "value": "{{HUB_API_KEY}}"
+          }
+        ],
+        "url": {
+          "raw": "{{HUB_URL}}/meta/config",
+          "host": [
+            "{{HUB_URL}}"
+          ],
+          "path": [
+            "meta",
+            "config"
+          ],
+          "query": []
+        },
+        "description": "Estado de configuración sin revelar secretos. Verifica allowlist, secreto de webhook y destino de BD."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "console.log(JSON.stringify(pm.response.json(), null, 2));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "03 swagger abierto",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Api-Key",
+            "value": "{{HUB_API_KEY}}"
+          }
+        ],
+        "url": {
+          "raw": "{{HUB_URL}}/docs",
+          "host": [
+            "{{HUB_URL}}"
+          ],
+          "path": [
+            "docs"
+          ],
+          "query": []
+        },
+        "description": "Documentación interactiva del servicio."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "40 Negativos de seguridad",
+      "item": [
+        {
+          "name": "40a sin api key -> 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{HUB_URL}}/meta/config",
+              "host": [
+                "{{HUB_URL}}"
+              ],
+              "path": [
+                "meta",
+                "config"
+              ],
+              "query": []
+            },
+            "description": "Autenticación obligatoria incluso desde IP permitida."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "40b api key incorrecta -> 401",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "clave-falsa-de-prueba-0000000000"
+              }
+            ],
+            "url": {
+              "raw": "{{HUB_URL}}/meta/config",
+              "host": [
+                "{{HUB_URL}}"
+              ],
+              "path": [
+                "meta",
+                "config"
+              ],
+              "query": []
+            },
+            "description": "Comparación a tiempo constante contra HUB_API_KEY."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "50 Cleanup · lectura",
+      "item": [
+        {
+          "name": "50a listado de conversaciones (LibreDesk)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{LIBREDESK_URL}}/api/v1/conversations/all?pageSize=10",
+              "host": [
+                "{{LIBREDESK_URL}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                "all"
+              ],
+              "query": [
+                {
+                  "key": "pageSize",
+                  "value": "10"
+                }
+              ]
+            },
+            "description": "Se toma la lista desde LibreDesk para elegir un UUID. Requiere Authorization Basic con API key de agente."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "50b GET conversación por UUID",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{HUB_API_KEY}}"
+              }
+            ],
+            "url": {
+              "raw": "{{HUB_URL}}/conversations/{{CONV_UUID}}",
+              "host": [
+                "{{HUB_URL}}"
+              ],
+              "path": [
+                "conversations",
+                "{{CONV_UUID}}"
+              ],
+              "query": []
+            },
+            "description": "Inspección sin efectos: qué se borraría y cuánto pesa. No requiere execute."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 o 404', () => pm.expect([200,404]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "50c DRY-RUN (por defecto)",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{HUB_API_KEY}}"
+              }
+            ],
+            "url": {
+              "raw": "{{HUB_URL}}/conversations/{{CONV_UUID}}",
+              "host": [
+                "{{HUB_URL}}"
+              ],
+              "path": [
+                "conversations",
+                "{{CONV_UUID}}"
+              ],
+              "query": []
+            },
+            "description": "MODIFICADOR DE DATOS en modo simulación. Reporta cascade_counts sin tocar nada. Siempre primero."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const d=pm.response.json();",
+                  "pm.test('es DRY-RUN', () => pm.expect(d.mode).to.eql('DRY-RUN'));",
+                  "console.log('afectaria:', JSON.stringify(d.conversation.cascade_counts));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "50d UUID inválido -> 400",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{HUB_API_KEY}}"
+              }
+            ],
+            "url": {
+              "raw": "{{HUB_URL}}/conversations/no-es-un-uuid",
+              "host": [
+                "{{HUB_URL}}"
+              ],
+              "path": [
+                "conversations",
+                "no-es-un-uuid"
+              ],
+              "query": []
+            },
+            "description": "Validación de entrada antes de tocar la base de datos."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "50e UUID inexistente -> 404",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{HUB_API_KEY}}"
+              }
+            ],
+            "url": {
+              "raw": "{{HUB_URL}}/conversations/00000000-0000-0000-0000-000000000000",
+              "host": [
+                "{{HUB_URL}}"
+              ],
+              "path": [
+                "conversations",
+                "00000000-0000-0000-0000-000000000000"
+              ],
+              "query": []
+            },
+            "description": "Formato válido pero ausente: no debe borrar nada ni error 500."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "60 Cleanup · ejecución (IRREVERSIBLE)",
+      "item": [
+        {
+          "name": "60 EJECUTAR borrado",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "X-Api-Key",
+                "value": "{{HUB_API_KEY}}"
+              }
+            ],
+            "url": {
+              "raw": "{{HUB_URL}}/conversations/{{CONV_UUID}}?execute=true",
+              "host": [
+                "{{HUB_URL}}"
+              ],
+              "path": [
+                "conversations",
+                "{{CONV_UUID}}"
+              ],
+              "query": [
+                {
+                  "key": "execute",
+                  "value": "true"
+                }
+              ]
+            },
+            "description": "⚠ BORRA DE VERDAD. Requiere respaldo previo. Solo contra una conversación de descarte que hayas elegido conscientemente. contact=true elimina además el usuario si queda sin conversaciones."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const d=pm.response.json();",
+                  "pm.test('EXECUTED', () => pm.expect(d.mode).to.eql('EXECUTED'));",
+                  "console.log('filas afectadas:', JSON.stringify(d.affected_rows));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "70 Webhooks entrantes (firma HMAC)",
+      "item": [
+        {
+          "name": "70a evento válido message.created",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{HUB_URL}}/hooks/libredesk",
+              "host": [
+                "{{HUB_URL}}"
+              ],
+              "path": [
+                "hooks",
+                "libredesk"
+              ],
+              "query": []
+            },
+            "description": "Nota privada de asistente IA: private=true + meta.ai_assistant_id. El pre-request calcula la firma sobre el body crudo.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"event\": \"message.created\", \"timestamp\": \"{{$isoTimestamp}}\", \"payload\": {\"uuid\": \"ae2b1323-23e2-494c-a843-96454548d3a6\", \"conversation_uuid\": \"{{CONV_UUID}}\", \"type\": \"outgoing\", \"sender_type\": \"agent\", \"private\": true, \"meta\": {\"ai_assistant_id\": 1}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": "\n// Firma X-Libredesk-Signature sobre el body CRUDO, igual que LibreDesk.\nconst crypto = require('crypto-js');\nconst raw = pm.request.body ? pm.request.body.raw : '';\nconst digest = crypto.HmacSHA256(raw, pm.environment.get('WEBHOOK_SECRET')).toString(crypto.enc.Hex);\npm.request.headers.add({ key: 'X-Libredesk-Signature', value: 'sha256=' + digest });\n"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 aceptado', () => pm.response.to.have.status(202));",
+                  "pm.test('accepted', () => pm.expect(pm.response.json().status).to.oneOf(['accepted','duplicate_ignored']));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "70b handoff detectado conversation.unassigned",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{HUB_URL}}/hooks/libredesk",
+              "host": [
+                "{{HUB_URL}}"
+              ],
+              "path": [
+                "hooks",
+                "libredesk"
+              ],
+              "query": []
+            },
+            "description": "actor_id = user_id del asistente. Es la señal más limpia de handoff a humano.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"event\": \"conversation.unassigned\", \"timestamp\": \"{{$isoTimestamp}}\", \"payload\": {\"conversation_uuid\": \"{{CONV_UUID}}\", \"actor_id\": 1}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": "\n// Firma X-Libredesk-Signature sobre el body CRUDO, igual que LibreDesk.\nconst crypto = require('crypto-js');\nconst raw = pm.request.body ? pm.request.body.raw : '';\nconst digest = crypto.HmacSHA256(raw, pm.environment.get('WEBHOOK_SECRET')).toString(crypto.enc.Hex);\npm.request.headers.add({ key: 'X-Libredesk-Signature', value: 'sha256=' + digest });\n"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202', () => pm.response.to.have.status(202));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "70c cambio de status",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{HUB_URL}}/hooks/libredesk",
+              "host": [
+                "{{HUB_URL}}"
+              ],
+              "path": [
+                "hooks",
+                "libredesk"
+              ],
+              "query": []
+            },
+            "description": "conversation.status_changed con previous/new.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"event\": \"conversation.status_changed\", \"timestamp\": \"{{$isoTimestamp}}\", \"payload\": {\"conversation_uuid\": \"{{CONV_UUID}}\", \"previous_status\": \"Open\", \"new_status\": \"Resolved\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": "\n// Firma X-Libredesk-Signature sobre el body CRUDO, igual que LibreDesk.\nconst crypto = require('crypto-js');\nconst raw = pm.request.body ? pm.request.body.raw : '';\nconst digest = crypto.HmacSHA256(raw, pm.environment.get('WEBHOOK_SECRET')).toString(crypto.enc.Hex);\npm.request.headers.add({ key: 'X-Libredesk-Signature', value: 'sha256=' + digest });\n"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202', () => pm.response.to.have.status(202));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "70d evento desconocido -> se acepta",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{HUB_URL}}/hooks/libredesk",
+              "host": [
+                "{{HUB_URL}}"
+              ],
+              "path": [
+                "hooks",
+                "libredesk"
+              ],
+              "query": []
+            },
+            "description": "Sin handler registrado. Se acepta igual: rechazar no provocaría reintento alguno y solo ensucia logs.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"event\": \"some.future.event\", \"timestamp\": \"{{$isoTimestamp}}\", \"payload\": {}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": "\n// Firma X-Libredesk-Signature sobre el body CRUDO, igual que LibreDesk.\nconst crypto = require('crypto-js');\nconst raw = pm.request.body ? pm.request.body.raw : '';\nconst digest = crypto.HmacSHA256(raw, pm.environment.get('WEBHOOK_SECRET')).toString(crypto.enc.Hex);\npm.request.headers.add({ key: 'X-Libredesk-Signature', value: 'sha256=' + digest });\n"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202', () => pm.response.to.have.status(202));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "70e firma inválida -> 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Libredesk-Signature",
+                "value": "sha256=deadbeef"
+              }
+            ],
+            "url": {
+              "raw": "{{HUB_URL}}/hooks/libredesk",
+              "host": [
+                "{{HUB_URL}}"
+              ],
+              "path": [
+                "hooks",
+                "libredesk"
+              ],
+              "query": []
+            },
+            "description": "Verifica que el receiver NO acepta eventos sin firma válida.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"event\": \"message.created\", \"timestamp\": \"{{$isoTimestamp}}\", \"payload\": {\"uuid\": \"x\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "const base = pm.variables.replaceIn('{{HUB_URL}}');",
+          "if (!base || base.indexOf('{{') !== -1) { throw new Error('HUB_URL sin definir: selecciona un environment (local-dev o production).'); }",
+          "console.log('destino api-hub =', base);"
+        ]
+      }
+    }
+  ]
+}

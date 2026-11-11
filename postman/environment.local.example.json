@@ -1,0 +1,35 @@
+{
+  "name": "local-dev",
+  "values": [
+    {
+      "key": "HUB_URL",
+      "value": "http://127.0.0.1:8091",
+      "enabled": true
+    },
+    {
+      "key": "LIBREDESK_URL",
+      "value": "http://localhost:8090",
+      "enabled": true
+    },
+    {
+      "key": "HUB_API_KEY",
+      "value": "2230d3c6b7940d46baf9638106450602a6c412b893806699fe716fb303295046",
+      "enabled": true,
+      "description": "Debe coincidir con el contenedor: docker exec koiosoft_api_hub printenv HUB_API_KEY"
+    },
+    {
+      "key": "WEBHOOK_SECRET",
+      "value": "",
+      "enabled": true,
+      "description": "HUB_LIBREDESK_WEBHOOK_SECRET; igual al campo Secret del webhook en LibreDesk"
+    },
+    {
+      "key": "CONV_UUID",
+      "value": "",
+      "enabled": true,
+      "description": "UUID objetivo. Vac\u00edo a prop\u00f3sito: se rellena tras elegirlo conscientemente."
+    }
+  ],
+  "_postman_variable_scope": "environment",
+  "_note": "Plantilla. Copiar a environment.local.json (gitignored) y ajustar."
+}
