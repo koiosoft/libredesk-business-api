@@ -53,6 +53,124 @@ class Settings(BaseSettings):
     libredesk_api_key: str = Field("", alias="HUB_LIBREDESK_API_KEY")
     libredesk_api_secret: str = Field("", alias="HUB_LIBREDESK_API_SECRET")
 
+    # --- JEV (TypeSafe) classifier, served by OpenRouter ---------------------
+    # Path verified 2026-11-11: /api/alpha/decisions. The standard chat/completions
+    # endpoint REJECTS this model with "typesafe/jev-1.14 is a decisions model and
+    # cannot be used with the chat/completions endpoint", so the URL is configurable
+    # and is not derived from nemotron's base URL.
+    classifier_url: str = Field(
+        "https://openrouter.ai/api/alpha/decisions", alias="CLASSIFIER_URL"
+    )
+    classifier_api_key: str = Field("", alias="CLASSIFIER_API_KEY")
+    classifier_model: str = Field("typesafe/jev-1.14", alias="CLASSIFIER_MODEL")
+    # Log the exact JSON body sent to JEV before each call, so "what did we ask it"
+    # is answerable without reading code. Off by default: `state` contains customer
+    # messages, which are personal data and must not land in logs unintentionally.
+    classifier_log_request: bool = Field(False, alias="CLASSIFIER_LOG_REQUEST")
+    # Sin CLASSIFIER_TEMPERATURE / _REASONING_EFFORT / _MAX_TOKENS a proposito:
+    # GET /models/typesafe/jev-1.14/endpoints devuelve supported_parameters: [].
+    # Sending them does not error, but OpenRouter silently ignores them.
+
+    # --- Business controls of the enforcement loop ----------------------------
+    # Two axes, not one. `confidence` measures how peaked the distribution is, NOT
+    # the probability of the chosen option (verified with real data: choice
+    # close-forward-human at 0.37 probability returned confidence 0.16).
+    # A single confidence threshold (the original suggestion was 0.7) would leave
+    # the feature as an obvious-case detector: it discards the ambiguous ones, which
+    # aporta valor. Se exigen ambos ejes.
+    jev_min_confidence: float = Field(0.5, alias="JEV_MIN_CONFIDENCE")
+    jev_min_probability: float = Field(0.45, alias="JEV_MIN_PROBABILITY")
+    jev_max_corrections: int = Field(3, alias="JEV_MAX_CORRECTIONS")
+    jev_concurrency: int = Field(4, alias="JEV_CONCURRENCY")
+
+    # prompt_key from LibreDesk's ai_prompts table used for generation. The
+    # /api/v1/ai/completion endpoint requires the key to EXIST (get-prompt fails
+    # with notFoundTemplate otherwise). Verified: a fresh install ships only the 6
+    # factory prompts (make_friendly, make_concise, ...), none suited for
+    # correcting, so a custom one must be created in Admin -> AI -> Prompt editor.
+    jev_completion_prompt_key: str = Field("make_professional",
+                                           alias="JEV_COMPLETION_PROMPT_KEY")
+    # Log the exact JSON body sent to LibreDesk's completion endpoint (the prompt
+    # that reaches Nemotron) before each generation. Off by default: it contains
+    # the customer conversation. Same rationale as CLASSIFIER_LOG_REQUEST.
+    completion_log_request: bool = Field(False, alias="COMPLETION_LOG_REQUEST")
+    # Motor de generacion de la correccion. True (default): /api/v1/ai/copilot,
+    # que da al modelo el historial completo, la persona real del asistente y sus
+    # tools (search_articles cubre los snippets). False: /api/v1/ai/completion con
+    # prompt plano compuesto por hub-api (comportamiento pre-2026-11-12).
+    jev_use_copilot: bool = Field(True, alias="JEV_USE_COPILOT")
+
+
+    # --- Reglas --------------------------------------------------------------
+    # Directory holding the YAML files. Relative to the process CWD (/app in the container).
+    rules_dir: str = Field("rules", alias="HUB_RULES_DIR")
+
+    @field_validator("libredesk_api_key", "libredesk_api_secret")
+    @classmethod
+    def _validate_ascii_credentials(cls, v: str) -> str:
+        """Credentials travel in an HTTP header, which httpx encodes as ASCII.
+
+        Measured failure: a secret containing U+2026 raised UnicodeEncodeError inside
+        httpx on every outbound call -- the pipeline crashed per event instead of
+        failing once at boot. Non-ASCII here is always a truncated copy/paste.
+        """
+        if not v:
+            return v
+        bad = sorted({c for c in v if ord(c) > 127})
+        if bad:
+            raise ConfigError(
+                "LibreDesk API credentials must be ASCII (they are sent in an HTTP "
+                "header); got non-ASCII: %s" % ", ".join("U+%04X" % ord(c) for c in bad)
+            )
+        return v
+
+    @field_validator("classifier_url")
+    @classmethod
+    def _validate_classifier_url(cls, v: str) -> str:
+        """Without a classifier URL there is no feature: abort instead of degrading."""
+        url = v.strip()
+        if not url.startswith("https://"):
+            raise ConfigError(
+                f"CLASSIFIER_URL must be an https:// endpoint, got {v!r}."
+            )
+        return url
+
+    @field_validator("classifier_api_key")
+    @classmethod
+    def _validate_classifier_key(cls, v: str) -> str:
+        # Consistent with _validate_key: a short key is almost always a truncated
+        # copy/paste, and failing at startup costs less than a 401 per event.
+        if len(v) < 20:
+            raise ConfigError(
+                "CLASSIFIER_API_KEY missing or too short (minimum 20). It is the "
+                "OpenRouter key; in this stack it is the same value as OPENAI_API_KEY."
+            )
+        return v
+
+    @field_validator("classifier_model")
+    @classmethod
+    def _validate_classifier_model(cls, v: str) -> str:
+        model = v.strip()
+        if "/" not in model:
+            raise ConfigError(
+                f"CLASSIFIER_MODEL must be an OpenRouter slug (vendor/model), got {v!r}."
+            )
+        return model
+
+    @field_validator("jev_min_confidence", "jev_min_probability")
+    @classmethod
+    def _validate_jev_thresholds(cls, v: float) -> float:
+        if not 0.0 < v <= 1.0:
+            raise ConfigError(f"JEV thresholds must be in (0, 1], got {v}.")
+        return v
+
+    @field_validator("jev_max_corrections", "jev_concurrency")
+    @classmethod
+    def _validate_jev_limits(cls, v: int) -> int:
+        if v < 1:
+            raise ConfigError(f"JEV limits must be >= 1, got {v}.")
+        return v
+
     @field_validator("allowed_ips")
     @classmethod
     def _validate_allowlist(cls, v: str) -> str:
@@ -90,6 +208,12 @@ class Settings(BaseSettings):
             for e in self.allowed_ips.split(",")
             if e.strip()
         ]
+
+    @property
+    def jev_thresholds(self) -> tuple[float, float]:
+        """(min_confidence, min_probability). Both must be exceeded to publish."""
+        return self.jev_min_confidence, self.jev_min_probability
+
 
 
 @lru_cache

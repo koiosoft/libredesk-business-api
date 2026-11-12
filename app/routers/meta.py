@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, Request
 
 from app.core.config import get_settings
 from app.core.security import client_ip, require_api_key, require_internal_origin
+from app.core.state import STATE
 
 router = APIRouter(tags=["meta"])
 
@@ -43,10 +44,33 @@ def whoami(request: Request, caller: str = Depends(require_internal_origin)):
     }
 
 
+def _rules_summary(rules) -> dict:
+    """Version/hash de las reglas activas. Sin secretos y sin texto de prompts."""
+    if rules is None:
+        return {"loaded": False}
+    return {
+        "loaded": True,
+        "version": rules.rules_version,
+        "hash": rules.rules_hash,
+        "actions": sorted(rules.options),
+        "agents": {
+            str(aid): {
+                "name": rule.name,
+                "enabled": rule.enabled,
+                "channels": sorted(rule.prefixes),
+            }
+            for aid, rule in sorted(rules.agents.items())
+        },
+    }
+
+
 @router.get("/meta/config")
 def config_summary(caller: str = Depends(require_api_key)):
     """Configuration state without revealing secrets."""
     s = get_settings()
+    from app import main as hub_main
+
+    rules = hub_main.RULES
     return {
         "bind": f"{s.hub_api_bind}:{s.hub_api_port}",
         "allowlist": [str(n) for n in s.networks],
@@ -55,4 +79,21 @@ def config_summary(caller: str = Depends(require_api_key)):
         "db_target": f"{s.db_user}@{s.db_host}:{s.db_port}/{s.db_name}",
         "libredesk_api": s.libredesk_base_url,
         "libredesk_api_credentials_set": bool(s.libredesk_api_key and s.libredesk_api_secret),
+        "classifier": {
+            "url": s.classifier_url,
+            "model": s.classifier_model,
+            "api_key_set": bool(s.classifier_api_key),
+            "log_request": s.classifier_log_request,
+        },
+        "jev": {
+            "min_confidence": s.jev_min_confidence,
+            "min_probability": s.jev_min_probability,
+            "max_corrections_per_conversation": s.jev_max_corrections,
+            "concurrency": s.jev_concurrency,
+        },
+        "rules": _rules_summary(rules),
+        # Volmenes del estado en memoria (dedupe, canales, correcciones). Sirve para
+        # ver si el cache se esta llenando y para detectar el dia que haya que
+        # migrarlo a un store compartido.
+        "state": STATE.snapshot(),
     }

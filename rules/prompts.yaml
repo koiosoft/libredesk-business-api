@@ -1,0 +1,72 @@
+# =============================================================================
+# rules/prompts.yaml — acciones que JEV puede elegir para un mensaje de Agente IA
+#
+# Las CLAVES de `options:` son a la vez:
+#   1. las opciones de `criteria` que se envian a JEV Choice (misma forma
+#      {nombre -> descripcion}, sin transformacion), y
+#   2. los identificadores del bloque de texto que se inyecta en el prompt final.
+#
+# `none` es OBLIGATORIA. El arranque aborta si falta (ver app/core/rules.py):
+# sin ella no habria forma de decir "no intervenir", y publicar por defecto es
+# exactamente lo que esta feature debe evitar.
+#
+# REDACCION: cada descripcion esta escrita como INSTRUCCION DE REESCRITURA, no
+# como mandato de accion. Motivo verificado en el fuente de LibreDesk:
+# internal/ai/ai.go antepone siempre el framing "You are rewriting a support
+# agent's draft reply ... only rewrite it" al contenido de /api/v1/ai/completion.
+# Un mandato tipo "debes preguntar" choca con ese framing; una reescritura que
+# INCORPORA la pregunta convive con el. Es una decision semantica, no
+# arquitectonica: cambiarla despues solo toca este archivo.
+#
+# Cambiar este YAML exige reiniciar el servicio (las reglas se leen en arranque).
+# La version/hash de lo cargado se expone en GET /meta/config.
+# =============================================================================
+
+question:
+  # `instructions` es la pregunta que JEV responde. Va en questions.action.instructions.
+  instructions: >-
+    Dados el ultimo mensaje del cliente y la respuesta que publico el Agente IA,
+    que debe hacer la correccion sobre esa respuesta?
+
+options:
+  none: >-
+    Ninguna de las acciones aplica: la respuesta del Agente IA es adecuada tal
+    como esta y NO DEBE PUBLICARSE ninguna correccion.
+
+  ask-technological-stack: >-
+    Reescribe la respuesta del agente de modo que incorpore, con mucha cortesia,
+    una sola pregunta sobre el stack tecnologico deseado para el proyecto (por
+    ejemplo PHP, HTML, Python o Java). Conserva todo lo valido que el agente ya
+    dijo; agrega la pregunta, no la reemplaces.
+
+  ask-architecture: >-
+    Reescribe la respuesta del agente de modo que incorpore, con mucha cortesia,
+    una sola pregunta sobre la arquitectura deseada (backend, movil, web o una
+    combinacion). Conserva todo lo valido que el agente ya dijo.
+
+  close-forward-human: >-
+    Reescribe la respuesta del agente de modo que resuma brevemente lo conversado,
+    anuncie la entrada del Especialista Comercial y, si el cliente prefiere,
+    proponga agendar la sesion diagnostica con el Arquitecto. El cierre debe dejar
+    clara la derivacion a un humano.
+
+  vague-questions: >-
+    Reescribe la respuesta del agente de modo que, con mucha cortesia, profundice 
+    con una o más preguntas sobre: Objetivo de Negocio del Requerimiento e indagar
+    sobre el estado actual: está implementado, debe corregirse, así como el Stack 
+    Tecnológico.  El objetivo es, astutamente, romper el hielo que lleva al Lead a
+    ser austero en sus planteamientos.
+
+  # Criterio observable: JEV solo ve mensajes del Agente IA, nunca la actividad de
+  # handoff. Por eso la opcion describe LA RESPUESTA QUE ABANDONA (despedida o
+  # remision a "un humano/el equipo" sin haber resuelto ni preguntado), no el
+  # evento interno. Redactada como reescritura para convivir con el framing fijo
+  # de LibreDesk ("You are rewriting... only rewrite it").
+  handoff-too-early:
+    text: >-
+      La respuesta del agente cierra o cede la atención a un humano sin haber
+      respondido lo que el cliente preguntó y sin dejar una sola pregunta de
+      levantamiento. Reescribe esa respuesta de modo que atienda directamente la
+      pregunta del lead con la mayor cortesía y cierre con UNA sola pregunta que
+      profundice en su requerimiento; elimina la despedida o remisión prematura.
+    post_action: revive-assistant

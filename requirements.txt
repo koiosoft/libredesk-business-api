@@ -3,3 +3,7 @@ uvicorn[standard]==0.32.*
 psycopg[binary]==3.2.*
 pydantic-settings==2.*
 httpx==0.27.*
+# app/core/rules.py lee y valida rules/*.yaml en el arranque. PyYAML ya estaba
+# presente en el venv y en la imagen, pero NO en el manifiesto: un build limpio
+# desde cero habria caido con ModuleNotFoundError al subir.
+PyYAML==6.*

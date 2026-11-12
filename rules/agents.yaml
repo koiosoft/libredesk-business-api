@@ -1,0 +1,59 @@
+# =============================================================================
+# rules/agents.yaml — allowlist de Agentes IA evaluados por esta feature
+#
+# FAIL-CLOSED: un assistant_id ausente de esta lista NUNCA se evalua. No se
+# clasifica, no se genera, no se publica; solo se loggea. `enabled: false` lo
+# ignora en silencio. Motivo verificado en el fuente de LibreDesk: los asistentes
+# borrados siguen apareciendo como autores de mensajes viejos
+# (internal/aiagent/queries.sql -> get-assistant-user-ids), asi que la presencia
+# de un ID en un payload no implica que deba atenderse.
+#
+# Los IDs son `ai_assistants.id` (el valor que llega en payload.meta.ai_assistant_id),
+# NO el user_id. Verificado en internal/aiagent/worker.go -> postReply().
+#
+# PRODUCCION (verificado por API el 2026-11-11): id=2 "Sofia Liendo L.",
+# id=3 "Sofia Liendo W." (WhatsApp), id=4 "Asistente de IA de Koiosoft" (email).
+# DESARROLLO: id=1 "Test Agent" (user_id=11, max_turns=6, canal whatsapp).
+# Descomenta los de produccion al activar alli; cada entorno carga su archivo.
+#
+# `prefixes` es la etiqueta que encabeza la correccion publicada. Se resuelve por
+# el canal del inbox; si el canal no esta aqui, NO se publica (fail-closed).
+# Cambiar este YAML exige reiniciar el servicio.
+# =============================================================================
+
+agents:
+  1:
+    enabled: true
+    # Nombre visible en logs y registro; no se envia a LibreDesk.
+    name: "Test Agent (desarrollo)"
+    # ID que va en PUT /conversations/{uuid}/assignee/user cuando una accion de
+    # JEV declara post_action: revive-assistant (devolver el Agente IA a la
+    # conversacion tras un handoff). OJO: es el USER_ID del bot (users.id de tipo
+    # ai_assistant), NO el assistant_id de esta llave. Verificado en desarrollo:
+    # ai_assistants.id=1 -> user_id=11. Si falta este campo, el revive se omite
+    # (la correccion igual se publica; solo no se reasigna).
+    assign_user_id: 11
+    prefixes:
+      chat: "Pensando un poco mejor lo comentado..."
+      email: "Para ser mas precisos, o con otro punto de vista"
+
+  # --- Produccion (dejar comentado hasta activar en ese entorno) ------------
+  # 2:
+  #   enabled: true
+  #   name: "Sofia Liendo L."
+  #   assign_user_id: <user_id del bot en produccion>
+  #   prefixes:
+  #     chat: "Pensando un poco mejor lo comentado..."
+  #     email: "Para ser mas precisos, o con otro punto de vista"
+  #
+  # 3:
+  #   enabled: true
+  #   name: "Sofia Liendo W. (WhatsApp)"
+  #   prefixes:
+  #     chat: "Pensando un poco mejor lo comentado..."
+  #
+  # 4:
+  #   enabled: true
+  #   name: "Asistente de IA de Koiosoft (email)"
+  #   prefixes:
+  #     email: "Para ser mas precisos, o con otro punto de vista"

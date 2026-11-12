@@ -1,2 +1,5 @@
 pytest
 httpx
+# Pruebas del pipeline: son coroutines (los handlers y clientes son async desde la
+# Fase D). Sin este plugin pytest las ignora o falla al recogerlas.
+pytest-asyncio

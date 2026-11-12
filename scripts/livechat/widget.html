@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Prueba widget LiveChat — hub-api JEV</title>
+  <style>body{font-family:sans-serif;margin:2rem;background:#fafafa}</style>
+</head>
+<body>
+  <h1>Widget de prueba (inbox 3 · Agent Live Chat)</h1>
+  <p>Escribe como cliente. El Agente IA responde; hub-api evalua y corrige.</p>
+
+  <script>
+    window.LibredeskSettings = {
+      baseURL: 'http://localhost:8090',
+      inboxID: '2c9642a0-658a-429e-9616-e0092885aaf3'
+    };
+  </script>
+  <script async src="http://localhost:8090/widget.js"></script>
+</body>
+</html>

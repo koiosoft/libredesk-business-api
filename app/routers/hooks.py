@@ -8,44 +8,40 @@ Constraints imposed by LibreDesk itself drive this design:
 
 Implemented consequences:
   1. HMAC signature verified against the RAW body before parsing.
-  2. Immediate 202 response; processing happens in the background.
-  3. Deduplication on (event, timestamp, entity id) since single delivery is not guaranteed.
-  4. Unknown events are logged and accepted, never rejected: a 4xx would not be retried
-     anyway, and it only pollutes LibreDesk logs.
+  2. Immediate 202 response; processing happens as a background task on the event
+     loop. Nothing slow runs before the response — no database write either, by the
+     decision recorded in app/core/state.py.
+  3. Deduplication on the message UUID (not the timestamp): two deliveries of the
+     same message collapse into one, and `webhook.test` payloads, which carry only
+     {id, name}, fall back to a content hash so consecutive tests stop discarding
+     each other silently.
+  4. Unknown events are logged and accepted, never rejected: a 4xx would not be
+     retried anyway, and it only pollutes LibreDesk logs.
+
+Route note: the path stays /hooks/libredesk deliberately. Renaming it would drop
+every event, because LibreDesk never retries — the URL registered in Admin ->
+Integrations -> Webhooks is the contract, not this file.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
 import logging
-import threading
-from collections import OrderedDict
+from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from app.core.config import get_settings
+from app.core.rules import Rules
 from app.core.security import require_internal_origin
+from app.core.state import STATE
+from app.jev.intake import build_dedupe_key, evaluate_message_created, normalize_channel
 
 log = logging.getLogger("hub-api.hooks")
 router = APIRouter(prefix="/hooks", tags=["webhooks"])
-
-# Bounded in-memory dedupe. Fine for a single process; if this ever runs multiple
-# replicas, move it to Redis or to a table with a unique constraint.
-_seen: "OrderedDict[str, None]" = OrderedDict()
-_SEEN_MAX = 5000
-_lock = threading.Lock()
-
-
-def _is_duplicate(key: str) -> bool:
-    with _lock:
-        if key in _seen:
-            return True
-        _seen[key] = None
-        while len(_seen) > _SEEN_MAX:
-            _seen.popitem(last=False)
-        return False
 
 
 def _signature_ok(raw: bytes, header_value: str, secret: str) -> bool:
@@ -61,6 +57,8 @@ def _signature_ok(raw: bytes, header_value: str, secret: str) -> bool:
 
 # --- Handler registry -----------------------------------------------------
 # Adding an event means registering a function. The dispatcher never changes.
+# Handlers are coroutines: dispatch runs on FastAPI's event loop, not on one daemon
+# thread per event (unbounded concurrency, silent death on restart).
 HANDLERS: dict[str, list] = {}
 
 
@@ -73,27 +71,73 @@ def on(event: str):
 
 
 @on("message.created")
-def handle_message_created(body: dict) -> None:
-    msg = body.get("payload", {})
-    meta = msg.get("meta") or {}
+async def handle_message_created(body: dict, ctx: dict[str, Any]) -> None:
+    """Puerta de entrada del enforcement loop.
+
+    Decide con las guardas puras de app/jev/intake.py si el mensaje entra al
+    pipeline. El motivo del rechazo se loggea completo: es la unica trazabilidad
+    que existe sin registro permanente.
+    """
+    rules: Rules | None = ctx.get("rules")
+    if rules is None:
+        log.error("message.created without rules loaded; skipping")
+        return
+
+    verdict = evaluate_message_created(body, rules=rules)
+
+    if not verdict.accept:
+        log.info("message.created ignored reason=%s msg=%s assistant=%s",
+                 verdict.reason, verdict.message_uuid, verdict.assistant_id)
+        return
+
+    hub = ctx.get("hub")
+    if hub is None:
+        # Sin clientes HTTP no hay clasificador ni publicacion posibles. Se loggea
+        # y se sale: nunca se asume exito.
+        log.warning("pipeline skipped, http clients not initialised conv=%s",
+                    verdict.conversation_uuid)
+        return
+
+    # El canal viene de conversation.created: message.created no lo trae (V13).
+    channel = STATE.channel_for(verdict.conversation_uuid)
+
     log.info(
-        "message.created conv=%s type=%s sender=%s private=%s ai_assistant=%s",
-        msg.get("conversation_uuid"), msg.get("type"),
-        msg.get("sender_type"), msg.get("private"), meta.get("ai_assistant_id"),
+        "message.created entering pipeline conv=%s msg=%s assistant=%s channel=%s",
+        verdict.conversation_uuid, verdict.message_uuid, verdict.assistant_id, channel,
     )
-    # Extension points: assistant handoff detection, private-note filtering,
-    # lead enrichment. Note that private notes arrive here too, with private=true.
+    item = {
+        "conversation_uuid": verdict.conversation_uuid,
+        "message_uuid": verdict.message_uuid,
+        "assistant_id": verdict.assistant_id,
+        "channel": channel,
+        "payload": body.get("payload") or {},
+    }
+
+    from app.jev.deps import run_guarded
+    from app.jev.pipeline import EnforcementPipeline
+
+    pipeline = EnforcementPipeline(
+        rules=rules, settings=get_settings(),
+        classifier=hub.classifier, libredesk=hub.libredesk,
+    )
+    try:
+        summary = await run_guarded(hub, pipeline, item)
+    except Exception:  # noqa: BLE001 - el fallo queda en logs, no derriba la tarea
+        log.exception("pipeline crashed conv=%s msg=%s",
+                      verdict.conversation_uuid, verdict.message_uuid)
+        return
+    log.info("pipeline result %s", summary)
 
 
 @on("conversation.assigned")
-def handle_assigned(body: dict) -> None:
+async def handle_assigned(body: dict, ctx: dict[str, Any]) -> None:
     p = body.get("payload", {})
     log.info("conversation.assigned uuid=%s to=%s",
              p.get("conversation_uuid"), p.get("assigned_to"))
 
 
 @on("conversation.unassigned")
-def handle_unassigned(body: dict) -> None:
+async def handle_unassigned(body: dict, ctx: dict[str, Any]) -> None:
     # Cleanest handoff signal available: actor_id is the assistant's user id when the
     # AI handed the conversation over.
     p = body.get("payload", {})
@@ -102,17 +146,37 @@ def handle_unassigned(body: dict) -> None:
 
 
 @on("conversation.status_changed")
-def handle_status_changed(body: dict) -> None:
+async def handle_status_changed(body: dict, ctx: dict[str, Any]) -> None:
     p = body.get("payload", {})
     log.info("status_changed uuid=%s %s -> %s",
              p.get("conversation_uuid"), p.get("previous_status"), p.get("new_status"))
 
 
-def _dispatch(event_name: str, body: dict) -> None:
+@on("conversation.created")
+async def handle_conversation_created(body: dict, ctx: dict[str, Any]) -> None:
+    """Unica fuente del canal en el stream de eventos (V13/V14).
+
+    message.created no incluye inbox_channel; conversation.created si. Se recuerda
+    por conversacion para elegir prefijo cuando llegue el turno del agente.
+    """
+    p = body.get("payload", {})
+    conv = p.get("uuid") or p.get("conversation_uuid")
+    # Store the NORMALIZED channel. The webhook value is the raw inbox_channel
+    # ("livechat"), while agents.yaml keys are "chat"/"email". Measured failure:
+    # a generated correction was discarded with no_prefix_for_channel:livechat
+    # because this cache held the raw string while the rest of the pipeline
+    # normalized everywhere else.
+    channel = normalize_channel(p.get("inbox_channel"))
+    if conv and channel:
+        STATE.remember_channel(conv, channel)
+    log.info("conversation.created uuid=%s channel=%s", conv, channel)
+
+
+async def _dispatch(event_name: str, body: dict, ctx: dict[str, Any]) -> None:
     for fn in HANDLERS.get(event_name, []):
         try:
-            fn(body)
-        except Exception:  # noqa: BLE001 - an event handler must never kill the worker
+            await fn(body, ctx)
+        except Exception:  # noqa: BLE001 - an event handler must never kill the task
             log.exception("handler failed event=%s fn=%s", event_name, fn.__name__)
 
 
@@ -144,18 +208,33 @@ async def receive_webhook(
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="body is not valid JSON")
 
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body is not a JSON object")
+
     event_name = body.get("event", "")
-    ts = body.get("timestamp", "")
-    payload = body.get("payload") or {}
-    ent = payload.get("uuid") or payload.get("conversation_uuid") or ""
-    key = f"{event_name}|{ts}|{ent}"
+    dedupe_key = build_dedupe_key(event_name, body)
 
-    if _is_duplicate(key):
-        log.info("duplicate event ignored: %s", key)
-        return {"status": "duplicate_ignored"}
+    if STATE.seen_before(dedupe_key):
+        log.info("duplicate event ignored key=%s", dedupe_key)
+        return {"status": "duplicate_ignored", "event": event_name}
 
-    # Process in the background so the response returns immediately (<3s requirement).
-    threading.Thread(target=_dispatch, args=(event_name, body), daemon=True).start()
+    ctx: dict[str, Any] = {
+        "rules": getattr(request.app.state, "rules", None),
+        "hub": getattr(request.app.state, "hub", None),
+        "dedupe_key": dedupe_key,
+    }
+
+    # Background processing: the 202 goes out before anything slow (JEV ~300 ms
+    # measured, LLM seconds). A task, not a thread.
+    task = asyncio.create_task(_dispatch(event_name, body, ctx))
+    tasks = getattr(request.app.state, "background_tasks", None)
+    if tasks is None:
+        tasks = set()
+        request.app.state.background_tasks = tasks
+    # Retaining the reference matters: an unreferenced task can be garbage collected
+    # before finishing, which is exactly the silent loss we removed.
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
 
     if event_name not in HANDLERS:
         log.info("event with no registered handler: %s", event_name)
