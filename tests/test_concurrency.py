@@ -1,7 +1,7 @@
-"""Pruebas de concurrencia: semaforo, 202 inmediato y ausencia de hilos.
+"""Concurrency tests: the semaphore, an immediate 202 and the absence of threads.
 
-Cubren R1 y R2 del plan, que son los riesgos de severidad Alta que justifican la
-Fase D. Se comprueban propiedades observables del modelo de ejecucion, no detalles
+They cover plan risks R1 and R2 -- the High-severity ones that justify Phase D.
+Observable properties of the execution model are asserted, not implementation
 de implementacion.
 """
 
@@ -55,7 +55,7 @@ async def test_semaphore_caps_concurrent_pipelines():
 
 
 async def test_semaphore_is_not_starved_by_failures():
-    """Un trabajo que revienta debe liberar el slot (async with, no acquire suelto)."""
+    """A job that blows up must release its slot (async with, not bare acquire)."""
 
     class Boom(SlowPipeline):
         async def run(self, item):
@@ -73,18 +73,18 @@ async def test_semaphore_is_not_starved_by_failures():
             *[run_guarded(hub, pipe, i) for i in range(4)], return_exceptions=True
         )
         assert all(isinstance(r, RuntimeError) for r in results)
-        # Si el slot no se liberara, el gather colgaria y esto expiraria.
+        # If the slot were not released, the gather would hang and this would expire.
         assert pipe.running == 0
     finally:
         await hub.aclose()
 
 
 def test_no_threading_in_the_webhook_path():
-    """La Fase D elimina threading.Thread por evento. Regresion guardada.
+    """Phase D removed per-event threading.Thread. Regression guarded.
 
-    Un hilo por evento significa: sin tope de concurrencia, ~8 MB de stack por
-    espera de red, y muerte silenciosa de trabajos a medias al reiniciar — que con
-    "LibreDesk no reintenta" equivale a perder el evento para siempre.
+    One thread per event means: no concurrency cap, ~8 MB of stack per network
+    wait, and silent death of half-finished jobs on restart -- which with
+    "LibreDesk never retries" makes that equivalent to losing the event forever.
     """
     import app.routers.hooks as hooks_mod
     import app.jev.pipeline as pipeline_mod

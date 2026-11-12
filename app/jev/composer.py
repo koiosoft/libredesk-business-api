@@ -1,16 +1,16 @@
-"""Composicion del prompt final para /api/v1/ai/completion.
+"""Composition of the final prompt for /api/v1/ai/completion.
 
-Estructura definida en rules/prompt-augmenter.md, en cuatro bloques:
+Structure defined in rules/prompt-augmenter.md, in four blocks:
 
     ROL -> ACCION -> PERSONA -> MATERIAL
 
-Restriccion heredada de LibreDesk (verificada en internal/ai/ai.go): el endpoint
-antepone SIEMPRE un framing fijo — "You are rewriting a support agent's draft
-reply to a customer ... only rewrite it" — y al final fuerza la salida a fragmento
-HTML (ensureHTMLFragment). Por eso las acciones se redactan como reescrituras.
+Constraint inherited from LibreDesk (verified in internal/ai/ai.go): the endpoint
+ALWAYS prepends a fixed framing -- "You are rewriting a support agent's draft
+reply to a customer ... only rewrite it" -- and forces HTML output at the end
+(ensureHTMLFragment). That is why actions are worded as rewrites.
 
-Esto es semantica, no arquitectura: si manana cambia el framing, aqui se ajusta el
-texto; el pipeline no se entera.
+This is semantics, not architecture: if the framing changes tomorrow, the wording
+is adjusted here and the pipeline never notices.
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ from __future__ import annotations
 import html
 import re
 
-# Etiquetas que el LLM puede producir y que deben sobrevivir: el cuerpo viaja como
-# HTML dentro de LibreDesk (content_type html verificado en la API real).
+# Tags the LLM may produce that must survive: the body travels as HTML inside
+# LibreDesk (content_type html verified against the real API).
 _ALLOWED_TAGS = {"p", "br", "b", "strong", "i", "em", "u", "ul", "ol", "li", "a"}
 
 _ROLE = (
@@ -30,9 +30,9 @@ _ROLE = (
 )
 
 _MATERIAL_LIMITS = {
-    # Techo de caracteres por bloque. No es un limite de tokens exacto, pero acota
-    # el coste (medido: ~$0.000000042/token en JEV; nemotron por su parte) y evita
-    # que un historial largo convierta cada correccion en una peticion enorme.
+    # Character ceiling per block. Not an exact token limit, but it bounds cost
+    # (measured: ~$0.000000042/token in JEV; nemotron on its side) and keeps a
+    # long history from turning every correction into a huge request.
     "customer_message": 4000,
     "agent_message": 6000,
     "instructions": 8000,
@@ -47,47 +47,48 @@ def _clip(text: str, limit: int) -> str:
 
 
 def strip_dangerous_template_syntax(text: str) -> str:
-    """Neutraliza `{{ ... }}` antes de publicar.
+    """Neutralizes `{{ ... }}` before publishing.
 
-    Motivo verificado: cmd/messages.go pasa el contenido por RenderStaffTemplate(),
-    que renderiza plantillas Go. Si el modelo emite algo con llaves dobles, LibreDesk
-    lo interpreta como accion de plantilla en vez de mostrarlo. Se escapa el par de
-    llaves; el resto del texto queda intacto.
+    Verified reason: cmd/messages.go passes content through RenderStaffTemplate(),
+    which renders Go templates. If the model emits anything with double braces,
+    LibreDesk treats it as template action instead of showing it. The brace pair is
+    neutralized; the rest of the text stays intact.
 
-    Mitigacion minima deliberada: el plan la dejo como pendiente post-MVP y aqui vive
-    en un solo lugar, asi que endurecerla despues no mueve arquitectura.
+    Deliberately minimal mitigation: the plan left this as post-MVP work and it
+    lives in one place, so hardening it later moves no architecture.
     """
     if not text:
         return text
-    # Se reemplaza el par de llaves por su forma escapada de Go ({{"{{"}}), que el
-    # motor de plantillas renderiza como texto literal. Un backslash delante no es
-    # valido en Python ni neutro en Go: romperia el mensaje en vez de neutralizarlo.
-    # No se escapa: se NEUTRALIZA. Verificado contra text/template con los datos de
-    # una conversacion real: "{{.Nombre}}" se EVALUA (devolvio "Roger") y
-    # "{{ call .X }}" se EJECUTO. La forma escapada de Go {{{{...}}}} no sirve aqui
-    # porque el contenido llega como string suelto, no dentro de otra plantilla, y
-    # parsea con error. Se rompe el par sustituyendo la segunda llave por un espacio
-    # interno: "{ {".Nombre}}" es texto literal para Go y no puede evaluarse nada.
+    # The pair becomes its Go-escaped form ({{"{{"}}), which the template engine
+    # renders as literal text. A leading backslash is neither valid in Python nor
+    # neutral in Go: it would break the message instead of neutralizing it.
+    # Nothing is escaped -- it is NEUTRALIZED. Verified against text/template with
+    # data from a real conversation: "{{.Nombre}}" WAS evaluated (returned "Roger")
+    # and "{{ call .X }}" DID execute. Go's own {{{{...}}}} escape does not work
+    # here because content arrives as a loose string, not inside another template,
+    # and it parses with an error. The pair is broken by replacing the second brace
+    # with an inner space: "{ {".Nombre}}" is literal text for Go and nothing can be
+    # evaluated.
     return text.replace("{{", "{ {").replace("}}", "} }")
 
 
 def sanitize_html(text: str) -> str:
-    """Quita etiquetas no permitidas sin destruir el marcado util.
+    """Removes disallowed tags without destroying useful markup.
 
-    El resultado se publica en un canal de cliente y, en email, dentro de la
-    plantilla HTML de LibreDesk. Un <script> generado por el modelo no deberia
-    llegar nunca alli.
+    The result is published into a customer channel and, in email, inside the
+    LibreDesk HTML template. A <script> generated by the model must never reach
+    there.
     """
     if not text:
         return ""
-    # Primero se descodifican entidades anidadas tipo &lt;script&gt;, que tras el
-    # parse del navegador serian vivas.
+    # Nested entities like &lt;script&gt; are decoded first: after a browser parse
+    # they would be live.
     decoded = html.unescape(text)
     tags = "|".join(_ALLOWED_TAGS)
-    # Elimina toda etiqueta que no este en la lista allowlist.
+    # Every tag outside the allowlist is dropped.
     decoded = re.sub(rf"</?(?!({tags})\b)[A-Za-z][^>]*>", "", decoded)
-    # Los atributos de las etiquetas permitidas se conservan salvo event handlers
-    # y esquemas peligrosos en href/src.
+    # Attributes of allowed tags are kept except event handlers and dangerous
+    # href/src schemes.
     decoded = re.sub(r"\s+on[a-zA-Z]+\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s>]+)", "", decoded)
     decoded = re.sub(
         r"(href|src)\s*=\s*(\"|')\s*(javascript|data|vbscript):[^\"']*\2",
@@ -101,10 +102,10 @@ def sanitize_html(text: str) -> str:
 def compose_prompt(*, action_text: str, assistant_name: str, instructions: str,
                    guardrails: str, customer_message: str,
                    agent_message: str) -> str:
-    """Devuelve el `content` plano para POST /api/v1/ai/completion.
+    """Returns the flat `content` for POST /api/v1/ai/completion.
 
-    El endpoint recibe UN solo string (V11): no separa system/user roles, asi que
-    toda la estructura viaja dentro de el. Es la limitacion aceptada en D6.
+    The endpoint receives ONE string (V11): it does not separate system/user
+    roles, so all structure travels inside it. This is the limitation accepted in D6.
     """
     parts: list[str] = [_ROLE]
 
@@ -141,13 +142,13 @@ def compose_prompt(*, action_text: str, assistant_name: str, instructions: str,
 
 def build_policy_header(instructions: str, guardrails: str,
                         *, limit: int = 2400) -> str:
-    """Encabezado de POLITICA para el `state` de JEV.
+    """POLICY block prepended to the JEV `state`.
 
-    Responde la pregunta que JEV no podia responder sin esto: "en base a que debe
-    mejorar?". Las opciones del YAML describen acciones genericas; la politica real
-    vive en instructions/guardrails del asistente (y en su base de conocimiento, a
-    la que hub-api no tiene acceso directo). Se recorta con cuidado: el costo por
-    token medido es ~$0.000000042, asi que 2400 chars anadidos cuestan centesimos.
+    Answers what JEV could not without it: "improve against what?" The YAML options
+    describe generic actions while the real policy lives in the assistant's own
+    instructions and guardrails (and in its knowledge base, which hub-api cannot
+    read directly). Clipped carefully: measured classifier cost is ~$0.000000042 per
+    token, so 2400 added characters are fractions of a cent.
     """
     parts = []
     if instructions.strip():
@@ -161,14 +162,20 @@ def build_policy_header(instructions: str, guardrails: str,
 
 def build_state_for_jev(*, customer_message: str, agent_message: str,
                         history: list[tuple[str, str]] | None = None,
-                        policy: str = "") -> str:
-    """`state` de JEV: mensaje del cliente + respuesta del agente (+ historial).
+                        policy: str = "",
+                        turn_structure: str = "") -> str:
+    """JEV `state`: customer message + agent reply (+ recent history).
 
-    O1 del plan proponia "mensaje del contacto + historial reciente". Se implementa
-    esa variante: clasificar la respuesta aislada impide saber si el agente ya
-    pregunto lo que JEV quiere preguntar, y generaria correcciones repetidas.
+    Plan O1 proposed "contact message + recent history" and that variant ships:
+    classifying an isolated reply makes it impossible to know whether the agent
+    already asked what JEV wants asked, and would generate repeated corrections.
     """
-    blocks: list[str] = [policy] if policy else []
+    # The mandatory turn structure is quoted verbatim: counting questions is only
+    # decidable when the rule forbidding two of them is visible. Measured (replay
+    # b92bf2d1, 2026-11-12): with two questions present but no quoted rule, JEV
+    # answered none at confidence 0.36.
+    blocks: list[str] = ([turn_structure] if turn_structure else [])
+    blocks += [policy] if policy else []
     for role, text in history or []:
         who = "Cliente" if role == "contact" else "Asistente"
         blocks.append(f"{who}: {_clip(text, 1200)}")
@@ -208,12 +215,12 @@ def build_state_for_jev(*, customer_message: str, agent_message: str,
 
 def build_correction_instruction(action_text: str, assistant_name: str,
                                  last_agent_reply: str) -> str:
-    """Instruccion (role user) para POST /api/v1/ai/copilot.
+    """Instruction (user role) for POST /api/v1/ai/copilot.
 
-    A diferencia de /ai/completion, aqui LibreDesk ya arma el contexto: historial
-    real de la conversacion, transcript, persona completa del asistente y sus
-    herramientas (incluida busqueda en la base de conocimiento). Nuestro mensaje
-    solo debe decir QUE hacer con la ultima respuesta, no repetir material.
+    Unlike /ai/completion, LibreDesk builds the context here already: real
+    conversation history, transcript, the assistant's full persona and its tools
+    (including knowledge-base search). Our message only states WHAT to fix about
+    the last reply and never restates the material.
     """
     who = f"El ultimo mensaje publico del asistente ({assistant_name})" if assistant_name else "El ultimo mensaje publico del asistente"
     quoted = _clip(last_agent_reply, 900)
@@ -229,11 +236,35 @@ def build_correction_instruction(action_text: str, assistant_name: str,
     )
 
 
-def with_prefix(prefix: str, body: str) -> str:
-    """Aplica el prefijo del canal (D7) sin romper el HTML.
+def build_correction_instruction(action_text: str, assistant_name: str,
+                                 last_agent_reply: str) -> str:
+    """Instruction (user role) for POST /api/v1/ai/copilot.
 
-    Va como parrafo propio: en email el contenido pasa por la plantilla HTML de
-    LibreDesk, y pegar el prefijo dentro del primer tag mezclaria estilos.
+    Unlike /ai/completion, LibreDesk already builds the context here: real
+    conversation history, transcript, the assistant's full persona and its tools
+    (search_articles covers snippets through the help center). So our message
+    only states WHAT to fix and never restates the material.
+    """
+    who = (f"The last public message from the assistant ({assistant_name})"
+           if assistant_name else "The last public message from the assistant")
+    quoted = _clip(last_agent_reply, 900)
+    return (
+        "Correct the assistant's reply to the customer. "
+        + who + ' was: "' + quoted + '".\n\n'
+        "APPLY THIS ACTION TO THAT REPLY:\n"
+        + _clip(action_text, 1200) + "\n\n"
+        "IMPORTANT: your output is not an internal chat. It must be ONLY the"
+        " corrected text ready to send to the customer, in the customer's"
+        " language, without commenting the correction or explaining changes,"
+        " keeping everything valid the assistant already said."
+    )
+
+
+def with_prefix(prefix: str, body: str) -> str:
+    """Applies the channel prefix (D7) without breaking the HTML.
+
+    It goes as its own paragraph: in email content passes through the LibreDesk
+    HTML template, and pasting the prefix inside the first tag would mix styles.
     """
     safe_body = sanitize_html(body)
     if not prefix:

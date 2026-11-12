@@ -25,8 +25,8 @@ logging.basicConfig(
 
 log = logging.getLogger("hub-api")
 
-# Reglas cargadas en el arranque. Ningun handler debe leer el disco: se sirve esta
-# instancia para que lo publicado corresponda exactamente a lo que subio.
+# Rules loaded at startup. No handler may read disk: this instance is served so
+# that what gets published matches exactly what came up.
 RULES: Rules | None = None
 
 
@@ -35,17 +35,17 @@ async def lifespan(app: FastAPI):
     global RULES
     s = get_settings()
 
-    # Fail-closed igual que config.py: un YAML roto impide subir. Un servicio que
-    # arranca con reglas parciales publicaria correcciones mal compuestas.
+    # Fail-closed like config.py: a broken YAML prevents startup. A service that
+    # boots with partial rules would publish badly composed corrections.
     RULES = load_rules(s.rules_dir)
     app.state.rules = RULES
 
-    # Tareas de fondo: la referencia se retiene aqui para que el event loop no las
-    # recolecte a mitad (el fallo silencioso que teniamos con los hilos daemon).
+    # Background tasks: the reference is held here so the event loop does not
+    # collect them mid-flight (the silent failure we had with daemon threads).
     app.state.background_tasks = set()
 
-    # Clientes HTTP compartidos + semaforo de concurrencia. Viven dentro del
-    # lifespan para que el cierre sea ordenado.
+    # Shared HTTP clients + concurrency semaphore. They live inside the
+    # lifespan so shutdown is orderly.
     async with clients(s) as hub:
         app.state.hub = hub
 
@@ -74,8 +74,8 @@ async def lifespan(app: FastAPI):
 
         yield
 
-        # Drenado antes de cerrar: las tareas en vuelo usan el httpx client que se
-        # cierra justo despues, y una tarea huespeda fallaria al intentar publicar.
+        # Drained before closing: in-flight tasks use the httpx client that is
+        # closed right after, and a stranded task would fail trying to publish.
         pending = [t for t in app.state.background_tasks if not t.done()]
         if pending:
             log.info("draining %s background task(s) before shutdown", len(pending))

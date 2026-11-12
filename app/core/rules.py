@@ -50,8 +50,13 @@ class AgentRule:
     name: str
     enabled: bool
     prefixes: dict[str, str] = field(default_factory=dict)
-    # users.id del bot para re-asignar (post_action revive-assistant); None = omitir.
-    assign_user_id: int | None = None
+    # Team that owns the AI agent, used by post_action revive-assistant. The
+    # revive assigns the TEAM, never a bare user id: assigning a user directly
+    # bypasses LibreDesk automation rules and leaves no owner path behind.
+    revive_team_id: int | None = None
+    # users.id of the assistant (type 'ai_assistant'). A real handoff is recorded
+    # with the bot itself as actor, which makes it recognizable from webhooks.
+    bot_user_id: int | None = None
 
     def prefix_for(self, channel: str | None) -> str | None:
         """Prefix for the channel, or None when undeclared (fail-closed)."""
@@ -69,8 +74,8 @@ class Rules:
     agents: dict[int, AgentRule]
     rules_hash: str
     rules_version: str
-    # Efectos secundarios declarados por opciones (post_action del YAML), vacio
-    # en la mayoria. Default aqui porque dataclass exige defaults al final.
+    # Side effects declared per option (YAML post_action); empty for most sets.
+    # Defaulted last because dataclass requires defaults at the end.
     post_actions: dict[str, str] = field(default_factory=dict)
 
     def agent(self, assistant_id: int) -> AgentRule | None:
@@ -131,8 +136,8 @@ def _load_prompts(path: Path) -> tuple[str, dict[str, str], dict[str, str]]:
         if not isinstance(key, str) or not key.strip():
             raise RulesError(f"{path.name}: option keys must be non-empty strings")
         # Dos formas admitidas:
-        #   clave: "texto plano"                     (legacy, sigue siendo lo comun)
-        #   clave: {text: "...", post_action: "..."} (cuando la accion ademas actua)
+        #   key: "plain text"                       (the common case)
+        #   key: {text: "...", post_action: "..."}  (when it also acts on state)
         if isinstance(desc, dict):
             raw_text = desc.get("text")
             pa = desc.get("post_action")
@@ -181,19 +186,23 @@ def _load_agents(path: Path) -> dict[int, AgentRule]:
         enabled = bool(value.get("enabled", False))
         name = str(value.get("name") or f"assistant-{assistant_id}")
 
-        raw_assign = value.get("assign_user_id")
-        assign_user_id: int | None = None
-        if raw_assign is not None:
+        def _positive_int(raw, field_name):
+            if raw is None:
+                return None
             try:
-                assign_user_id = int(raw_assign)
+                n = int(raw)
             except (TypeError, ValueError):
                 raise RulesError(
-                    f"{path.name}: agent {assistant_id} 'assign_user_id' is not an integer"
+                    f"{path.name}: agent {assistant_id} '{field_name}' is not an integer"
                 )
-            if assign_user_id <= 0:
+            if n <= 0:
                 raise RulesError(
-                    f"{path.name}: agent {assistant_id} 'assign_user_id' must be positive"
+                    f"{path.name}: agent {assistant_id} '{field_name}' must be positive"
                 )
+            return n
+
+        revive_team_id = _positive_int(value.get("revive_team_id"), "revive_team_id")
+        bot_user_id = _positive_int(value.get("bot_user_id"), "bot_user_id")
 
         prefixes_raw = value.get("prefixes") or {}
         if not isinstance(prefixes_raw, dict):
@@ -217,7 +226,7 @@ def _load_agents(path: Path) -> dict[int, AgentRule]:
 
         agents[assistant_id] = AgentRule(
             assistant_id=assistant_id, name=name, enabled=enabled, prefixes=prefixes,
-            assign_user_id=assign_user_id,
+            revive_team_id=revive_team_id, bot_user_id=bot_user_id,
         )
     return agents
 

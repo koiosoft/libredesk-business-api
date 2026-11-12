@@ -1,0 +1,43 @@
+# =============================================================================
+# rules/prod/agents.yaml - production allowlist (Koiosoft live workspace).
+#
+# Same fail-closed contract as every rule set: ids are ai_assistants.id (NOT
+# user_id), unknown agents are never evaluated, and a channel without a prefix
+# means "publish nothing".
+#
+# Verified against the production API on 2026-11-11:
+#   id=2 "Sofia Liendo L."        (LiveChat)
+#   id=3 "Sofia Liendo W."        (WhatsApp)
+#   id=4 "Asistente de IA de Koiosoft" (email)
+# Their team ids for revive-assistant MUST be confirmed in the production
+# workspace before enabling; until then leave revive_team_id commented so the
+# correction publishes but no reassignment happens.
+# =============================================================================
+
+agents:
+  2:
+    enabled: true
+    name: "Sofia Liendo L."
+    # revive_team_id: <confirm in prod>
+    # bot_user_id: <users.id del bot en produccion>
+    prefixes:
+      chat: "Pensando un poco mejor lo comentado..."
+      email: "Para ser mas precisos, o con otro punto de vista"
+
+  3:
+    enabled: true
+    name: "Sofia Liendo W. (WhatsApp)"
+    # revive_team_id: <confirm in prod>
+    # bot_user_id: <users.id del bot en produccion>
+    prefixes:
+      chat: "Pensando un poco mejor lo comentado..."
+      email: "Para ser mas precisos, o con otro punto de vista"
+
+  4:
+    enabled: true
+    name: "Asistente de IA de Koiosoft"
+    # revive_team_id: <confirm in prod>
+    # bot_user_id: <users.id del bot en produccion>
+    prefixes:
+      chat: "Pensando un poco mejor lo comentado..."
+      email: "Para ser mas precisos, o con otro punto de vista"

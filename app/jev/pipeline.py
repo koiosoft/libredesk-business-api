@@ -1,14 +1,15 @@
-"""Pipeline de enforcement: JEV -> generar -> publicar.
+"""Enforcement pipeline: JEV -> generate -> publish.
 
-Orquesta las etapas sobre el event loop de FastAPI. El 202 ya se respondio en el
-router cuando esto corre; aqui todo puede tardar segundos sin afectar a LibreDesk.
+Orchestrates the stages on FastAPI's event loop. The 202 was already answered by
+the router when this runs; everything here may take seconds without affecting
+LibreDesk.
 
-Concurrencia: asyncio.Semaphore(JEV_CONCURRENCY) alrededor del pipeline COMPLETO,
-no solo del paso lento individual. R1 del plan: una rafaga de mensajes del agente
-sin tope abriria N conexiones simultaneas al LLM y podia agotar la cuota.
+Concurrency: asyncio.Semaphore(JEV_CONCURRENCY) around the COMPLETE pipeline, not
+just the single slow step. Plan R1: an uncapped burst of agent messages would open
+N simultaneous LLM connections and could exhaust quota.
 
-Regla transversal: cualquier fallo => no publicar. Clasificar mal se corrige; un
-mensaje erroneo enviado a un cliente ya esta enviado.
+Cross-cutting rule: any failure => do not publish. Misclassifying is fixable; a
+wrong message already sent to a customer is not.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ log = logging.getLogger("hub-api.jev.pipeline")
 
 
 def _text_of(message: dict[str, Any]) -> str:
-    """Texto legible de un mensaje. Prioriza text_content (plain) sobre content."""
+    """Readable text of a message. Prefers text_content (plain) over content."""
     for key in ("text_content", "content"):
         value = message.get(key)
         if isinstance(value, str) and value.strip():
@@ -44,10 +45,10 @@ def _is_contact(message: dict[str, Any]) -> bool:
 
 def build_history(messages: list[dict[str, Any]], *, exclude_uuid: str | None,
                   limit: int = 8) -> list[tuple[str, str]]:
-    """Historial cronologico (rol, texto) excluyendo notas privadas y el propio msg.
+    """Chronological history (role, text) excluding private notes and the msg itself.
 
-    Se filtran los mensajes `private`: son internas del equipo y no deben entrar en
-    un prompt que genera texto visible para el cliente.
+    `private` messages are filtered out: they are team-internal and must not enter
+    a prompt that generates customer-visible text.
     """
     out: list[tuple[str, str]] = []
     for m in messages:
@@ -64,7 +65,7 @@ def build_history(messages: list[dict[str, Any]], *, exclude_uuid: str | None,
 
 
 def pick_customer_message(history: list[tuple[str, str]]) -> str:
-    """Ultimo mensaje del cliente dentro del historial ya recortado."""
+    """Last customer message within the already trimmed history."""
     for role, text in reversed(history):
         if role == "contact":
             return text
@@ -80,10 +81,10 @@ class EnforcementPipeline:
         self._libredesk = libredesk
 
     async def run(self, item: dict[str, Any]) -> dict[str, Any]:
-        """Ejecuta el ciclo completo para un mensaje ya aceptado por intake.py.
+        """Runs the full cycle for a message already accepted by intake.py.
 
-        Devuelve un resumen para loggear. No lanza: un fallo aqui debe quedar en
-        logs, no tumbar la tarea ni reintentar contra LibreDesk.
+        Returns a summary for logging. Never raises: a failure here stays in logs,
+        it does not crash the task nor retry against LibreDesk.
         """
         conv = item.get("conversation_uuid")
         msg_uuid = item.get("message_uuid")
@@ -95,7 +96,7 @@ class EnforcementPipeline:
         if not conv or not msg_uuid or not assistant_id:
             return {**base, "outcome": "skipped", "reason": "incomplete_input"}
 
-        # G3 segunda pasada: el asistente pudo borrarse despues de cargar las reglas.
+        # G3 second pass: the assistant may have been deleted after rules loaded.
         cfg = await self._libredesk.get_assistant(assistant_id)
         if cfg is None:
             log.warning("assistant %s not readable; ignoring (fail-closed)", assistant_id)
@@ -107,7 +108,7 @@ class EnforcementPipeline:
         if not agent_text:
             return {**base, "outcome": "ignored", "reason": "empty_agent_message"}
 
-        # --- Estado para JEV: cliente + respuesta + historial reciente (O1). ---
+        # --- State for JEV: customer + reply + recent history (O1). ---
         messages = await self._libredesk.get_conversation_messages(conv)
         conv_row: dict[str, Any] | None = None
         history = build_history(messages, exclude_uuid=msg_uuid)
@@ -115,21 +116,28 @@ class EnforcementPipeline:
             next((m for m in reversed(messages)
                   if _is_contact(m) and not m.get("private")), {})
         )
-        # La politica del asistente es el criterio que JEV necesita para elegir
-        # "en base a que mejorar". Se lee del asistente real (cacheado), recortado.
-        cfg_now = cfg  # ya fetched arriba via get_assistant
+        # The assistant policy is the criterion JEV needs to decide what to
+        # improve against; it is read from the live assistant (cached) and clipped.
+        guard = getattr(cfg, "guardrails", "") or ""
         policy = composer.build_policy_header(
-            getattr(cfg_now, "instructions", "") or "",
-            getattr(cfg_now, "guardrails", "") or "",
+            getattr(cfg, "instructions", "") or "", guard,
         )
         state = composer.build_state_for_jev(
             customer_message=customer, agent_message=agent_text,
             history=history[:-1], policy=policy,
+            turn_structure=_extract_turn_structure(guard),
         )
+
+        # Offer handoff-too-early only when a handoff was actually observed. Always
+        # presenting it invites JEV to prefer "hand the lead over" to a plain
+        # rewrite; measured 2026-11-12 that cost a real correction its revive.
+        criteria = dict(self._rules.options)
+        if not item.get("handed_off"):
+            criteria.pop("handoff-too-early", None)
 
         min_conf, min_prob = self._settings.jev_thresholds
         decision = await self._classifier.classify(
-            state, self._rules.question_instructions, self._rules.options,
+            state, self._rules.question_instructions, criteria,
             min_confidence=min_conf, min_probability=min_prob,
         )
         if not decision.should_act or decision.choice is None:
@@ -138,19 +146,19 @@ class EnforcementPipeline:
 
         action_text = self._rules.action_text(decision.choice)
         if not action_text:
-            # Accion elegida pero ausente del YAML: fail-closed total.
+            # Chosen action missing from the YAML: total fail-closed.
             return {**base, "outcome": "ignored", "reason": f"action_missing:{decision.choice}"}
 
-        # --- Tope por conversacion, ANTES de gastar la generacion. ---
+        # --- Per-conversation cap BEFORE spending generation. ---
         if not STATE.take_correction_slot(
             conv, self._settings.jev_max_corrections
         ):
             return {**base, "outcome": "skipped", "reason": "correction_limit_reached",
                     "choice": decision.choice}
 
-        # Generacion contextual: /ai/copilot reconstruye el historial, la persona
-        # y la base de conocimiento del lado de LibreDesk. compose_prompt()/
-        # complete() quedan como respaldo explicito via JEV_USE_COPILOT=false.
+        # Contextual generation: /ai/copilot rebuilds history, persona and the
+        # knowledge base on the LibreDesk side. compose_prompt()/
+        # complete() remain reachable explicitly through JEV_USE_COPILOT=false.
         if self._settings.jev_use_copilot:
             instruction = composer.build_correction_instruction(
                 action_text=action_text, assistant_name=cfg.name,
@@ -178,11 +186,11 @@ class EnforcementPipeline:
 
         safe_body = composer.strip_dangerous_template_syntax(generated)
 
-        # Prefijo por canal (D7). El canal llega de conversation.created o, si no,
-        # se resuelve leyendo la conversacion: sin prefijo NO se publica, porque la
-        # etiqueta es lo que distingue la correccion del mensaje del agente.
-        # Canal: preferencia cache del evento conversation.created; si falta (p.ej.
-        # la conversacion nacio antes de arrancar este proceso), se lee la cabecera.
+        # Prefix per channel (D7). The channel comes from conversation.created or,
+        # resolved by reading the conversation: without a prefix nothing publishes,
+        # because the label is what tells the correction from the agent message.
+        # Channel: cached from conversation.created; if missing (e.g. the
+        # conversation predates this process), its header is read instead.
         # Normalize every source. The webhook path stores an already-mapped value,
         # but get_conversation returns the raw inbox_channel ("whatsapp"), which has
         # no prefix key in agents.yaml -- measured 2026-11-12: a valid correction was
@@ -210,30 +218,27 @@ class EnforcementPipeline:
             echo_id=f"jev-retry:{msg_uuid}",
         )
 
-        # Post-action declarativa (rules/prompts.yaml `post_action`): las acciones
-        # tipo revive-agent-ia no cambian el TEXTO sino el ESTADO del canal. Solo
-        # tras publicacion exitosa: reasignar sin mensaje publicado dejaría al bot
-        # sin nada que retomar y resetea turnos en vano.
+        # Declarative post-action (rules/prompts.yaml `post_action`): options like
+        # revive-assistant change channel STATE, not text. They run only after a
+        # successful publish -- reassigning with nothing published would leave the
+        # bot with nothing to pick up and reset its turn budget in vain.
+        summary_extra: dict[str, Any] = {}
         if result.ok:
             post = self._rules.post_action(decision.choice)
             if post == "revive-assistant":
-                # El ID a re-asignar viene de rules/agents.yaml (assign_user_id).
-                # Fallback: el user_id leido del asistente en vivo. Sin ambos, se
-                # omite el revive sin fallar la correccion ya publicada.
-                target = rule.assign_user_id if rule else None
-                target = target or cfg.user_id
-                if target:
-                    revived = await self._libredesk.assign_assistant(conv, target)
+                # Reassign by TEAM (never by bare user id): the operator's
+                # automation rule watches team events and assigns the bot itself.
+                team = rule.revive_team_id if rule else None
+                if team:
+                    revived = await self._libredesk.assign_team(conv, team)
+                    if revived:
+                        STATE.clear_handoff(conv)
                     summary_extra = {"revived_assistant": revived,
-                                     "revived_assignee_id": target}
+                                     "revive_team_id": team}
                 else:
-                    log.warning("revive skipped: no assign_user_id configured for "
+                    log.warning("revive skipped: no revive_team_id configured for "
                                 "assistant %s", assistant_id)
                     summary_extra = {"revived_assistant": False}
-            else:
-                summary_extra = {}
-        else:
-            summary_extra = {}
         outcome = "corrected" if result.ok else "failed"
         log.info(
             "pipeline done outcome=%s conv=%s choice=%s conf=%.3f status=%s reason=%s",
@@ -246,8 +251,28 @@ class EnforcementPipeline:
                 "new_message_uuid": result.message_uuid, **summary_extra}
 
 
+def _extract_turn_structure(guardrails: str) -> str:
+    """Pull the mandatory turn-structure clause out of the guardrail blob.
+
+    Only the first rule block is quoted so JEV sees the exact contract a reply
+    must satisfy without the rest of the policy diluting attention. Counting
+    questions is otherwise undecidable from the message alone.
+    """
+    start = guardrails.find("ESTRUCTURA OBLIGATORIA")
+    if start < 0:
+        return ""
+    end = len(guardrails)
+    for marker in ("\nB.", "\nb."):
+        i = guardrails.find(marker, start)
+        if i > 0:
+            end = min(end, i)
+    chunk = guardrails[start:end].strip()
+    return ("MANDATORY TURN STRUCTURE (check the reply against this):\n"
+            + chunk[:1200])
+
+
 def _contact_email(conversation_row: dict[str, Any] | None) -> list[str] | None:
-    """Correo del contacto, como ultimo recurso para `to` en email."""
+    """Contact email, as last resort for `to` in email."""
     contact = (conversation_row or {}).get("contact")
     if isinstance(contact, dict):
         email = contact.get("email")
@@ -258,10 +283,10 @@ def _contact_email(conversation_row: dict[str, Any] | None) -> list[str] | None:
 
 def _recipients_for(payload: dict[str, Any],
                     messages: list[dict[str, Any]]) -> list[str] | None:
-    """Destinatarios para email. Verificado: `to` vacio devuelve 500 "`to` empty".
+    """Recipients for email. Verified: an empty `to` returns HTTP 500 "`to` empty".
 
-    Se reutiliza el `to` del propio mensaje del agente (meta.to), que ya resuelve
-    hilos y alias; si no existe, se busca en el ultimo saliente con destinatarios.
+    Reuses the agent message's own `to` (meta.to), which already resolves
+    threads and aliases; when absent it looks in the latest outgoing message.
     """
     meta = payload.get("meta")
     if isinstance(meta, dict):

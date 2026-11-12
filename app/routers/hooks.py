@@ -72,18 +72,20 @@ def on(event: str):
 
 @on("message.created")
 async def handle_message_created(body: dict, ctx: dict[str, Any]) -> None:
-    """Puerta de entrada del enforcement loop.
+    """Entry gate of the enforcement loop.
 
-    Decide con las guardas puras de app/jev/intake.py si el mensaje entra al
-    pipeline. El motivo del rechazo se loggea completo: es la unica trazabilidad
-    que existe sin registro permanente.
+    Decides with the pure guards in app/jev/intake.py whether a message enters the
+    pipeline. The rejection reason is logged in full: it is the only traceability
+    available without a permanent record.
     """
     rules: Rules | None = ctx.get("rules")
     if rules is None:
         log.error("message.created without rules loaded; skipping")
         return
 
-    verdict = evaluate_message_created(body, rules=rules)
+    conv_hint = (body.get("payload") or {}).get("conversation_uuid")
+    verdict = evaluate_message_created(
+        body, rules=rules, handed_off=STATE.had_handoff(conv_hint))
 
     if not verdict.accept:
         log.info("message.created ignored reason=%s msg=%s assistant=%s",
@@ -93,7 +95,7 @@ async def handle_message_created(body: dict, ctx: dict[str, Any]) -> None:
     hub = ctx.get("hub")
     if hub is None:
         # Sin clientes HTTP no hay clasificador ni publicacion posibles. Se loggea
-        # y se sale: nunca se asume exito.
+        # and returns: success is never assumed.
         log.warning("pipeline skipped, http clients not initialised conv=%s",
                     verdict.conversation_uuid)
         return
@@ -109,6 +111,7 @@ async def handle_message_created(body: dict, ctx: dict[str, Any]) -> None:
         "conversation_uuid": verdict.conversation_uuid,
         "message_uuid": verdict.message_uuid,
         "assistant_id": verdict.assistant_id,
+        "handed_off": verdict.handed_off,
         "channel": channel,
         "payload": body.get("payload") or {},
     }
@@ -122,7 +125,7 @@ async def handle_message_created(body: dict, ctx: dict[str, Any]) -> None:
     )
     try:
         summary = await run_guarded(hub, pipeline, item)
-    except Exception:  # noqa: BLE001 - el fallo queda en logs, no derriba la tarea
+    except Exception:  # noqa: BLE001 - failures stay in logs, they do not kill the task
         log.exception("pipeline crashed conv=%s msg=%s",
                       verdict.conversation_uuid, verdict.message_uuid)
         return
@@ -136,13 +139,66 @@ async def handle_assigned(body: dict, ctx: dict[str, Any]) -> None:
              p.get("conversation_uuid"), p.get("assigned_to"))
 
 
+HANDOFF_NOTE_MARKERS = (
+    "did not have an answer and handed",
+    "reached its response limit",
+    "could not respond and handed",
+)
+
+
 @on("conversation.unassigned")
 async def handle_unassigned(body: dict, ctx: dict[str, Any]) -> None:
-    # Cleanest handoff signal available: actor_id is the assistant's user id when the
-    # AI handed the conversation over.
+    """Flag a conversation the AI agent gave up on.
+
+    When the model returns nothing LibreDesk unassigns the assistant with the bot
+    itself as actor -- that is the only webhook-visible trace of an abandonment
+    (the note it posts is private). Remembering it lets the next public agent
+    reply be judged against handoff-too-early, and a successful revive clears it.
+    """
     p = body.get("payload", {})
-    log.info("conversation.unassigned uuid=%s actor=%s",
-             p.get("conversation_uuid"), p.get("actor_id"))
+    conv = p.get("conversation_uuid")
+    actor = p.get("actor_id")
+    rules = ctx.get("rules")
+    bot_users = {a.bot_user_id for a in rules.agents.values() if a.bot_user_id} \
+        if rules else set()
+    if conv and isinstance(actor, int) and actor in bot_users:
+        STATE.remember_handoff(conv)
+        log.info("ai handoff recorded conv=%s actor=%s", conv, actor)
+    elif conv and rules is not None and rules.has_post_action("revive-assistant"):
+        # Actor is not the bot (human operation, or the payload omitted it): fall
+        # back to reading recent messages for an assistant-authored handoff note.
+        hub = ctx.get("hub")
+        if hub is not None:
+            _confirm_handoff_from_notes(hub, conv, bot_users)
+    log.info("conversation.unassigned uuid=%s actor=%s", conv, actor)
+
+
+def _confirm_handoff_from_notes(hub, conversation_uuid: str, bot_users: set[int]) -> None:
+    """Best effort: look at recent messages for an assistant-authored handoff note.
+
+    A PUT .../assignee/user/remove run by a human records that human as actor, so
+    the event alone cannot tell operator cleanup apart from the model giving up.
+    The private note LibreDesk posts in the latter case IS authored by the
+    assistant, which is the signal required before offering handoff-too-early.
+    """
+    async def _check() -> None:
+        try:
+            rows = await hub.libredesk.get_conversation_messages(
+                conversation_uuid, page_size=6)
+        except Exception:  # noqa: BLE001 - diagnostic only, never breaks intake
+            return
+        for m in rows:
+            if not m.get("private") or m.get("sender_id") not in bot_users:
+                continue
+            text = (m.get("text_content") or "").lower()
+            if any(marker in text for marker in HANDOFF_NOTE_MARKERS):
+                STATE.remember_handoff(conversation_uuid)
+                log.info("ai handoff confirmed by note conv=%s", conversation_uuid)
+                return
+
+    task = asyncio.create_task(_check())
+    hub.background_tasks.add(task)
+    task.add_done_callback(hub.background_tasks.discard)
 
 
 @on("conversation.status_changed")
@@ -154,10 +210,11 @@ async def handle_status_changed(body: dict, ctx: dict[str, Any]) -> None:
 
 @on("conversation.created")
 async def handle_conversation_created(body: dict, ctx: dict[str, Any]) -> None:
-    """Unica fuente del canal en el stream de eventos (V13/V14).
+    """The only channel source in the event stream (V13/V14).
 
-    message.created no incluye inbox_channel; conversation.created si. Se recuerda
-    por conversacion para elegir prefijo cuando llegue el turno del agente.
+    message.created carries no inbox_channel; conversation.created does. It is
+    remembered per conversation so the prefix can be chosen when the agent turn
+    arrives.
     """
     p = body.get("payload", {})
     conv = p.get("uuid") or p.get("conversation_uuid")
@@ -166,6 +223,10 @@ async def handle_conversation_created(body: dict, ctx: dict[str, Any]) -> None:
     # a generated correction was discarded with no_prefix_for_channel:livechat
     # because this cache held the raw string while the rest of the pipeline
     # normalized everywhere else.
+    # A brand-new conversation starts clean: a reused uuid must never inherit an
+    # old abandonment state and offer handoff-too-early to JEV.
+    if conv:
+        STATE.clear_handoff(conv)
     channel = normalize_channel(p.get("inbox_channel"))
     if conv and channel:
         STATE.remember_channel(conv, channel)

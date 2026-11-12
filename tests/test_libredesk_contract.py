@@ -33,7 +33,7 @@ def client_for(path: str, payload: dict, *, method: str = "GET"):
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
-# --- Capturas literales de la API real --------------------------------------
+# --- Verbatim captures from the live API ------------------------------------
 
 MESSAGES_PAGINATED = {
     "status": "success",
@@ -95,7 +95,7 @@ async def test_flat_list_is_still_accepted_defensively():
 
 @pytest.mark.asyncio
 async def test_unexpected_shape_is_logged_not_silent(caplog):
-    """"data" ni lista ni paginada: debe quedar registro, no un [] mudo.
+    """"data" neither list nor paginated: it must log, not return a silent [].
 
     The silent [] is what made the original bug look like a JEV decision.
     """

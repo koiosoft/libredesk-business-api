@@ -94,11 +94,17 @@ class Settings(BaseSettings):
     # that reaches Nemotron) before each generation. Off by default: it contains
     # the customer conversation. Same rationale as CLASSIFIER_LOG_REQUEST.
     completion_log_request: bool = Field(False, alias="COMPLETION_LOG_REQUEST")
-    # Motor de generacion de la correccion. True (default): /api/v1/ai/copilot,
-    # que da al modelo el historial completo, la persona real del asistente y sus
-    # tools (search_articles cubre los snippets). False: /api/v1/ai/completion con
-    # prompt plano compuesto por hub-api (comportamiento pre-2026-11-12).
+    # Engine that produces the correction. True (default): /api/v1/ai/copilot,
+    # which gives the model the full history, the real assistant persona and its
+    # tools (search_articles covers the snippets). False: /api/v1/ai/completion
+    # with a flat prompt composed here (pre-2026-11-12 behavior).
     jev_use_copilot: bool = Field(True, alias="JEV_USE_COPILOT")
+    # Wall-clock budget for the generation call. Measured: the contextual engine
+    # (copilot) needs 15-34 s because LibreDesk rebuilds history, persona and KB
+    # search before calling the model; the flat completion path answers in ~2 s.
+    # A fixed 20 s cut off generations that would have succeeded (observed as
+    # network_error at exactly 20.0 s), so this is configurable per environment.
+    jev_generation_timeout_s: int = Field(90, alias="JEV_GENERATION_TIMEOUT_S")
 
 
     # --- Reglas --------------------------------------------------------------

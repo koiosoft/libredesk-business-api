@@ -1,0 +1,37 @@
+# =============================================================================
+# Example agents.yaml - allowlist of AI assistants this hub is allowed to act on.
+#
+# FAIL-CLOSED: an assistant_id missing from this file is NEVER evaluated. No
+# classification, no generation, no publish - the event is only logged. Reason
+# verified in LibreDesk source: deleted assistants keep appearing as authors of
+# old messages, so presence of an id in a payload does not mean it is ours to
+# touch.
+#
+# IDS ARE ai_assistants.id (the value arriving in payload.meta.ai_assistant_id,
+# injected by postReply() in internal/aiagent/worker.go) - NOT the user_id.
+#
+# `prefixes` labels the published correction per channel. Channels accepted:
+# chat (LiveChat and WhatsApp share treatment) and email. If the resolved
+# channel has no prefix here, the correction is NOT published: an unlabeled
+# message would confuse the customer more than the original text did.
+#
+# `revive_team_id` is used by options declaring post_action: revive-assistant.
+# hub-api calls PUT /conversations/{uuid}/assignee/team with this id; the
+# operator's automation rule maps that team to the assistant's user. It is the
+# TEAM id, not the bot's user id. Omit it where reviving is not wanted.
+# =============================================================================
+
+agents:
+  1:
+    enabled: true
+    name: "Example Agent (documentation)"
+    revive_team_id: 2
+    prefixes:
+      chat: "Let me refine that:"
+      email: "For precision:"
+
+  # Declaring an agent disabled documents it without ever acting on it:
+  # intake ignores it silently instead of treating it as unknown.
+  2:
+    enabled: false
+    name: "Example Agent kept for documentation"

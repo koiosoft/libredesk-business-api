@@ -1,0 +1,60 @@
+# =============================================================================
+# Example prompts.yaml - the closed list of actions the classifier may choose.
+#
+# FAIL-CLOSED CONTRACT (enforced by app/core/rules.py at startup):
+#   * `question.instructions` must be a non-empty string.
+#   * `options` must be a non-empty mapping that CONTAINS `none`.
+#   * Every option description must be non-empty.
+# Without `none` there is no way to say "do not intervene", which would make
+# publishing the default behavior - the opposite of what this service must do.
+#
+# KEY NAMING: keys are sent to the classifier as criteria names AND appear in
+# structured logs/metrics. Use ascii lowercase-hyphenated identifiers so they
+# survive log grepping and dashboard grouping.
+#
+# WRITING THE DESCRIPTIONS: state observable conditions. "asks two or more
+# questions" can be checked against the message; "was not engaging enough"
+# cannot, and the classifier answers with low confidence, which the thresholds
+# then discard. Prefer countable/verifiable wording.
+#
+# CHANGING THIS FILE REQUIRES A SERVICE RESTART (rules load once at boot).
+# The loaded content hash is exposed on GET /meta/config.
+# =============================================================================
+
+question:
+  # Goes into questions.action.instructions. Phrase it around the artifact the
+  # classifier actually sees: the customer's last message and the agent reply.
+  instructions: >-
+    Given the customer's last message and the reply published by the AI agent,
+    what should the correction do to that reply?
+
+options:
+  # MANDATORY. Never injected as text; it is the "publish nothing" answer.
+  none: >-
+    None of the actions applies: the agent's reply is appropriate as written
+    and NO correction should be published.
+
+  # Plain form: key -> description string.
+  ask-technological-stack: >-
+    Rewrite the agent's reply so it keeps everything valid already said and
+    adds, courteously, exactly one question about the desired technology stack
+    (for example PHP, Python, Flutter). Add the question, do not replace.
+
+  # Extended form: use when the action must also DO something after publishing.
+  turn-structure-violation:
+    text: >-
+      The agent's reply asks two or more questions in the same message, or asks
+      a question before technically answering what the customer raised. Rewrite
+      the reply keeping all technical content and leave exactly ONE question:
+      the one with the highest value for scoping the project. Remove the rest.
+    # Optional side effect applied ONLY after a successful publish. Valid values
+    # today: revive-assistant. Omit the key entirely when the action is pure text.
+
+  handoff-too-early:
+    text: >-
+      The agent's reply closes or hands the conversation to a human without
+      having answered what the customer asked and without leaving a single
+      qualifying question. Rewrite it to answer the lead's question directly,
+      courteously, and end with ONE depth question about their requirement;
+      remove the premature hand-off language.
+    post_action: revive-assistant

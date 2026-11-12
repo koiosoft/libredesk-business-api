@@ -1,10 +1,10 @@
-"""Contrato de carga de reglas (rules/*.yaml) y de los validadores JEV.
+"""Rule loading contract (rules/*.yaml) and the JEV settings validators.
 
-Estas pruebas son el equivalente automatizado del "no sube con reglas rotas":
-cada caso reproduce una forma concreta en que un YAML puede quedar incompleto y
-verifica que el arranque aborta en vez de degradar a publicar sin evaluar.
+These tests are the automated equivalent of "it does not boot with broken rules":
+each case reproduces one concrete way a YAML can end up incomplete and verifies
+that startup aborts instead of degrading into publishing without evaluation.
 
-Nada aqui toca red, base de datos ni LibreDesk.
+Nothing here touches network, database or LibreDesk.
 """
 
 from __future__ import annotations
@@ -19,13 +19,13 @@ from app.core.rules import NONE_OPTION, RulesError, load_rules
 REPO_RULES = Path(__file__).resolve().parent.parent / "rules"
 
 
-# --- El contrato del formato (fixtures, NUNCA rules/ reales) -----------------
+# --- The format contract (fixtures, NEVER the real rules/) ------------------
 #
-# Las reglas se editan en vivo. Ninguna prueba de CONTRATO puede depender de
-# que prompts.yaml conserve ciertos keys, prefijos o ids de agente: eso cambia
-# a proposito y romperia CI sin que exista bug. Estos casos escriben YAML
-# minimos en tmp_path. Unica excepcion: test_repo_rules_load(), que lee rules/
-# solo para verificar parseabilidad e invariantes de forma, nunca contenido.
+# Rules are edited live. No contract test may depend on prompts.yaml keeping
+# specific keys, prefixes or agent ids: that changes on purpose and would break
+# CI with no bug involved. These cases write minimal YAML into tmp_path. The only
+# exception is test_repo_rules_load(), which reads rules/ solely to verify
+# parseability and shape invariants -- never content.
 
 from tests.conftest import (
     FIXTURE_AGENTS as MINIMAL_AGENTS,
@@ -40,10 +40,10 @@ from tests.conftest import write_rules as _fixture_write_rules
 def write_rules(tmp_path: Path, options_yaml: str = MINIMAL_OPTIONS,
                 agents_yaml: str = MINIMAL_AGENTS,
                 augmenter_md: str = MINIMAL_AUGMENTER) -> Path:
-    """Escribe un directorio de reglas valido segun el contrato.
+    """Writes a contract-valid rule directory.
 
-    Defaults: quien muta UNA cosa deja la otra intacta sin repetir YAML.
-    Ningun caso copia rules/ del repo; esos archivos cambian en vivo a proposito.
+    Defaults let a case mutate ONE thing while leaving the other untouched. No
+    case copies the repo's rules/: those files change live on purpose.
     """
     d = tmp_path / "rules"
     d.mkdir(exist_ok=True)
@@ -54,11 +54,11 @@ def write_rules(tmp_path: Path, options_yaml: str = MINIMAL_OPTIONS,
 
 
 def test_repo_rules_load():
-    """Los YAML versionados deben ser validos: si alguien los rompe, esto falla.
+    """Versioned YAML must be valid: if someone breaks it, this fails.
 
-    Unica prueba que lee rules/. Verifica SOLO que carga y las invariantes del
-    contrato ('none' presente, al menos una accion, hashes con la forma debida).
-    No afirma contenidos: esos se cambian en vivo a proposito.
+    The only test that reads rules/. It verifies ONLY that loading succeeds and
+    the contract invariants hold (`none` present, at least one action, hashes with
+    the right shape). It asserts no content: that changes live on purpose.
     """
     rules = load_rules(REPO_RULES)
     assert rules.options, "prompts.yaml declared no action"
@@ -68,7 +68,7 @@ def test_repo_rules_load():
 
 
 def test_none_never_produces_an_action(tmp_path: Path):
-    """`none` es valida como eleccion pero jamas como texto a inyectar."""
+    """`none` is a valid choice but never text to inject."""
     rules = load_rules(write_rules(tmp_path, MINIMAL_OPTIONS, MINIMAL_AGENTS))
     assert rules.action_text(NONE_OPTION) is None
     assert rules.action_text(None) is None
@@ -79,7 +79,7 @@ def test_none_never_produces_an_action(tmp_path: Path):
 
 
 def test_agent_ids_are_assistant_ids_not_user_ids(tmp_path: Path):
-    """La allowlist indexa por ai_assistants.id, no por el user_id del bot."""
+    """The allowlist is keyed by ai_assistants.id, not by the bot's user_id."""
     rules = load_rules(write_rules(tmp_path, MINIMAL_OPTIONS, MINIMAL_AGENTS))
     assert rules.is_evaluable(42) is True
     assert rules.is_evaluable(9999) is False
@@ -97,17 +97,19 @@ def test_prefix_resolution_is_per_channel_and_fail_closed(tmp_path: Path):
     assert agent is not None
     assert agent.prefix_for("chat")
     assert agent.prefix_for("email")
-    # Canal no declarado o desconocido => no se publica.
+    # An undeclared or unknown channel means nothing is published.
     assert agent.prefix_for("telegram") is None
     assert agent.prefix_for(None) is None
 
 
 def test_extended_option_shape_exposes_post_action(tmp_path):
-    """`{text, post_action}` es forma valida; el texto sigue llegando a JEV."""
-    rules = load_rules(write_rules(tmp_path))   # la fixture trae revive-action
-    assert rules.action_text("revive-action") == "Reescribe agregando una pregunta de levantamiento."
-    assert rules.post_action("revive-action") == "revive-assistant"
-    assert rules.post_action("some-action") is None
+    """`{text, post_action}` is a valid shape; text still reaches JEV."""
+    rules = load_rules(write_rules(tmp_path))   # the fixture carries one extended option
+    key = "handoff-too-early"
+    assert rules.action_text(key) == rules.options[key]
+    assert rules.action_text(key) != MINIMAL_OPTIONS.split("options:")[0]  # sanity
+    assert rules.post_action(key) == "revive-assistant"
+    assert rules.post_action(FIXTURE_CHOICE) is None
     assert rules.post_action(NONE_OPTION) is None
 
 
@@ -129,27 +131,28 @@ def test_plain_and_extended_options_can_mingle(tmp_path):
     rules = load_rules(d)
     assert rules.action_text("plain") == "Reescribe X."
     assert rules.post_action("ext") == "revive-assistant"
-    # El hash debe cambiar si cambia un post_action (forma parte del contrato).
+    # The hash must change when a post_action changes (it is part of the contract).
     other = load_rules(write_rules(tmp_path, options_yaml=(
         "question:\n  instructions: ok\noptions:\n"
         "  none: No intervenir.\n  ext: Reescribe Y.\n")))
     assert rules.rules_hash != other.rules_hash
 
 
-def test_assign_user_id_is_parsed_and_validated(tmp_path):
-    from tests.conftest import FIXTURE_ASSISTANT_ID as AID, FIXTURE_ASSIGN_USER_ID as UID
+def test_revive_team_id_is_parsed_and_validated(tmp_path):
+    from tests.conftest import (FIXTURE_ASSISTANT_ID as AID,
+                                FIXTURE_REVIVE_TEAM_ID as TEAM)
 
     rules = load_rules(write_rules(tmp_path))
-    assert rules.agent(AID).assign_user_id == UID
-    # opcional: un agente sin el campo sigue siendo valido (el revive se omite).
+    assert rules.agent(AID).revive_team_id == TEAM
+    # Optional: an agent without the field stays valid; the revive is skipped.
     d = write_rules(tmp_path, agents_yaml=(
         "agents:\n  %d:\n    enabled: true\n    prefixes:\n      chat: Nota\n" % AID))
-    assert load_rules(d).agent(AID).assign_user_id is None
+    assert load_rules(d).agent(AID).revive_team_id is None
 
 
-def test_bad_assign_user_id_aborts(tmp_path):
+def test_bad_revive_team_id_aborts(tmp_path):
     d = write_rules(tmp_path, agents_yaml=(
-        "agents:\n  42:\n    enabled: true\n    assign_user_id: bot\n"
+        "agents:\n  42:\n    enabled: true\n    revive_team_id: bot\n"
         "    prefixes:\n      chat: Nota\n"))
     with pytest.raises(RulesError, match="not an integer"):
         load_rules(d)
@@ -159,16 +162,16 @@ def test_bad_assign_user_id_aborts(tmp_path):
 
 @pytest.fixture
 def broken_rules(tmp_path: Path) -> Path:
-    """Reglas minimas VALIDAS listas para mutar una cosa por caso.
+    """Minimal VALID rules, ready to mutate one thing per case.
 
-    No copia rules/ del repo: ese contenido cambia en vivo y los testes de
+    It does not copy the repo rules/: that content changes live and contract tests
     contrato no pueden depender de cadenas especificas de prompts.yaml.
     """
     return write_rules(tmp_path)
 
 
 def test_missing_none_option_aborts(broken_rules):
-    """Sin `none` el default pasa a ser publicar: hay que rechazar el arranque."""
+    """Without `none` publishing becomes the default: startup must be refused."""
     (broken_rules / "prompts.yaml").write_text(
         "question:\n  instructions: ok\noptions:\n  solo-accion: Reescribe X.\n",
         encoding="utf-8",
@@ -227,7 +230,7 @@ def test_non_numeric_agent_id_aborts(broken_rules):
 
 
 def test_disabled_agent_needs_no_prefix(broken_rules):
-    """Un agente deshabilitado se declara para documentar, no para publicar."""
+    """A disabled agent is declared to document it, not to publish through it."""
     (broken_rules / "agents.yaml").write_text(
         "agents:\n  9:\n    enabled: false\n", encoding="utf-8"
     )
@@ -284,10 +287,10 @@ def _settings(monkeypatch, **extra):
 
 
 def test_defaults_are_the_approved_thresholds(monkeypatch):
-    """El fixture autouse fija CLASSIFIER_* de prueba, asi que aqui se limpian.
+    """The autouse fixture pins test CLASSIFIER_* values, so they are cleared here.
 
-    Sin borrarlas, lo que se verificaria serian los valores del fixture y no los
-    defaults reales con los que el contenedor arranca si nadie los define.
+    Without clearing them, what would be verified are the fixture values and not the
+    real defaults the container boots with when nobody defines them.
     """
     for name in ("CLASSIFIER_MODEL", "CLASSIFIER_URL", "HUB_RULES_DIR"):
         monkeypatch.delenv(name, raising=False)

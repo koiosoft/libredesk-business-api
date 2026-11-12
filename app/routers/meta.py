@@ -45,7 +45,7 @@ def whoami(request: Request, caller: str = Depends(require_internal_origin)):
 
 
 def _rules_summary(rules) -> dict:
-    """Version/hash de las reglas activas. Sin secretos y sin texto de prompts."""
+    """Version/hash of active rules. No secrets and no prompt text."""
     if rules is None:
         return {"loaded": False}
     return {
@@ -92,8 +92,8 @@ def config_summary(caller: str = Depends(require_api_key)):
             "concurrency": s.jev_concurrency,
         },
         "rules": _rules_summary(rules),
-        # Volmenes del estado en memoria (dedupe, canales, correcciones). Sirve para
-        # ver si el cache se esta llenando y para detectar el dia que haya que
-        # migrarlo a un store compartido.
+        # Volumes of in-memory state (dedupe, channels, corrections). Useful to
+        # watch the cache filling up and to detect the day it must move to a
+        # shared store.
         "state": STATE.snapshot(),
     }

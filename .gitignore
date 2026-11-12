@@ -225,3 +225,9 @@ __marimo__/
 postman/environment.*.json
 !postman/environment.*.example.json
 .DS_Store
+
+# Environment rule sets. rules/dev is this workstation's live policy: edited
+# constantly, never versioned. The committed reference lives in rules/example and
+# production reads rules/prod. .gitkeep keeps the directory present on a clone.
+rules/dev/*
+!rules/dev/.gitkeep

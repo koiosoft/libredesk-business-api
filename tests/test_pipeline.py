@@ -1,8 +1,8 @@
-"""Pruebas del pipeline completo con dependencias simuladas.
+"""Full-pipeline tests with simulated dependencies.
 
-Ninguna hace red: el clasificador y el cliente de LibreDesk se sustituyen por dobles
-que devuelven las formas exactas verificadas contra las APIs reales. Lo que se
-prueba aqui es la ORQUESTACION: en que orden se llama, cuando se aborta y que se
+None touches the network: the classifier and the LibreDesk client are replaced by
+doubles returning the exact shapes verified against the real APIs. What is tested
+here is ORCHESTRATION: call order, when it aborts and what gets
 publica.
 """
 
@@ -64,6 +64,7 @@ class FakeLibreDesk:
         self._completion = completion
         self._publish_error = publish_error
         self.published: list[dict] = []
+        self.team_calls: list[tuple[str, int]] = []
         self.assign_calls: list[tuple[str, int]] = []
         self.completion_calls: list[tuple[str, str]] = []
         self.copilot_calls: list[dict] = []
@@ -83,8 +84,8 @@ class FakeLibreDesk:
         self.completion_calls.append((prompt_key, content))
         return self._completion
 
-    async def assign_assistant(self, conversation_uuid, user_id):
-        self.assign_calls.append((conversation_uuid, user_id))
+    async def assign_team(self, conversation_uuid, team_id):
+        self.team_calls.append((conversation_uuid, team_id))
         return True
 
     async def publish_correction(self, **kwargs):
@@ -98,7 +99,7 @@ def make_pipeline(rules, *, decision=None, libredesk, classifier=None,
                   settings=None, use_copilot=True) -> EnforcementPipeline:
     s = settings or Settings()
     if not use_copilot:
-        # model_copy no re-valida: cambia solo el motor bajo prueba.
+        # model_copy skips revalidation: it only swaps the engine under test.
         s = s.model_copy(update={"jev_use_copilot": False})
     clf = classifier or FakeClassifier(decision)
     return EnforcementPipeline(
@@ -158,15 +159,15 @@ async def test_full_cycle_publishes_with_prefix_and_echo(rules):
     sent = ld.published[0]
     assert sent["echo_id"] == "jev-retry:m2"
     assert sent["conversation_uuid"] == "conv-1"
-    # Prefijo D7 aplicado como parrafo propio.
-    # El prefijo viene de agents.yaml (fixture). Se deriva, no se copia: si manana
-    # ese texto cambia en vivo, la prueba sigue midiendo "se anteponio el prefijo".
+    # D7 prefix applied as its own paragraph.
+    # The prefix comes from agents.yaml (fixture). Derived, never copied: if the
+    # that text changes live, the test still measures "a prefix was prepended".
     import html as _html
     expected_prefix = "<p>%s</p>" % _html.escape(rules.agent(AID).prefix_for("chat").strip())
     assert sent["html_body"].startswith(expected_prefix)
-    # Destinatario reutilizado del mensaje del agente (email exige `to`).
+    # Recipient reused from the agent message (email requires `to`).
     assert sent["to"] == ["cliente@example.com"]
-    # Se pidio al asistente real su persona.
+    # The live assistant persona was requested.
     assert ld.completion_calls, "nothing was generated"
 
 
@@ -177,9 +178,9 @@ async def test_prompt_includes_action_person_and_material(rules):
     prompt_key, content = ld.completion_calls[0]
 
     assert prompt_key  # viene de config, no hardcodeado
-    # El bloque ACCION que se envia al LLM debe ser la DESCRIPCION declarada en el
-    # YAML de fixture. Se deriva del objeto Rules; si el contenido cambia en vivo,
-    # la prueba sigue midiendo lo mismo sin romperse.
+    # The ACTION block sent to the LLM must be the DESCRIPTION declared in the
+    # fixture YAML. It is derived from the Rules object; if content changes live,
+    # the test still measures the same thing without breaking.
     action_block = rules.action_text(FIXTURE_CHOICE)
     assert action_block, "the fixture action must exist"
     assert action_block.lower() in content.lower(), "the injected action block must come from the fixture YAML"
@@ -190,11 +191,17 @@ async def test_prompt_includes_action_person_and_material(rules):
 
 
 async def test_jev_receives_all_yaml_options_as_criteria(rules):
+    """Every YAML option reaches JEV once the handoff evidence is present.
+
+    Without handed_off the conditional option is withheld on purpose (see
+    test_handoff_option_only_offered_after_a_real_handoff), so this case asserts
+    the full mapping with the flag set.
+    """
     ld = FakeLibreDesk()
     clf = FakeClassifier(ACT)
     pipe = EnforcementPipeline(rules=rules, settings=Settings(),
                                classifier=clf, libredesk=ld)
-    await pipe.run(item())
+    await pipe.run(item(handed_off=True))
     assert set(clf.calls[0]["criteria"]) == set(rules.options)
     assert "none" in clf.calls[0]["criteria"]
 
@@ -211,7 +218,7 @@ async def test_none_decision_never_generates_or_publishes(rules):
 
 
 async def test_unreadable_assistant_is_fail_closed(rules):
-    """Asistente borrado: GET 404 -> None -> no se toca nada (G3/V3)."""
+    """Deleted assistant: GET 404 -> None -> nothing is touched (G3/V3)."""
     ld = FakeLibreDesk(assistant=None)
     ld.get_assistant = _returns_none
     pipe = make_pipeline(rules, decision=ACT, libredesk=ld)
@@ -241,7 +248,7 @@ async def test_empty_generation_does_not_publish(rules):
 
 
 async def test_missing_channel_blocks_publication(rules):
-    """Sin prefijo para el canal no se publica: la etiqueta es obligatoria (D7)."""
+    """Without a prefix for the channel nothing publishes: the label is mandatory."""
     ld = FakeLibreDesk()
     pipe = make_pipeline(rules, decision=ACT, libredesk=ld)
     out = await pipe.run(item(channel="telegram"))
@@ -267,7 +274,7 @@ async def test_publish_failure_reports_failed_not_corrected(rules):
     assert out["outcome"] == "failed"
 
 
-# --- Tope por conversacion --------------------------------------------------
+# --- Per-conversation cap ---------------------------------------------------
 
 async def test_correction_limit_stops_after_max(rules):
     s = Settings(JEV_MAX_CORRECTIONS="2")
@@ -293,10 +300,10 @@ async def test_limit_applies_per_conversation(rules):
         assert out["outcome"] == "corrected", conv
 
 
-# --- Respaldo por lectura de la conversacion --------------------------------
+# --- Fallback by reading the conversation ------------------------------------
 
 class ConversationAwareLibreDesk(FakeLibreDesk):
-    """Doble que simula no conocer el canal hasta que se lee la conversacion."""
+    """Double that does not know the channel until the conversation is read."""
 
     def __init__(self, **kw) -> None:
         super().__init__(**kw)
@@ -309,9 +316,9 @@ class ConversationAwareLibreDesk(FakeLibreDesk):
 
 
 async def test_channel_is_resolved_by_reading_the_conversation(rules):
-    """Tras un reinicio no hay cache: el prefijo sale de leer la conversacion.
+    """After a restart there is no cache: the prefix comes from reading the conversation.
 
-    Cubre V13 (message.created no trae canal) sin depender de haber visto el
+    Covers V13 (message.created carries no channel) without depending on having
     conversation.created correspondiente.
     """
     ld = ConversationAwareLibreDesk()
@@ -319,8 +326,8 @@ async def test_channel_is_resolved_by_reading_the_conversation(rules):
     out = await pipe.run(item(channel=None))
     assert out["outcome"] == "corrected"
     assert ld.conversation_reads == 1
-    # ConversationAwareLibreDesk reporta inbox_channel="email": el prefijo aplicado
-    # debe ser el de EMAIL, lo que prueba que el canal vino de la LECTURA y no del item.
+    # ConversationAwareLibreDesk reports inbox_channel="email": the applied prefix
+    # must be the EMAIL one, proving the channel came from the READ, not the item.
     assert sent_prefix(ld) == expected_prefix_of(rules, "email")
 
 
@@ -329,8 +336,8 @@ async def test_read_channel_is_cached_for_next_messages(rules):
     pipe = make_pipeline(rules, decision=ACT, libredesk=ld)
     await pipe.run(item(channel=None, conversation_uuid="conv-cache"))
     assert STATE.channel_for("conv-cache") == "email"
-    # Segunda vez no vuelve a leer: usa la cache ya poblada. Se fuerza channel=None
-    # en el item para que la unica fuente posible sea STATE.
+    # The second time it does not read again: the cache is already populated. Force
+    # the item so the only possible source is STATE.
     ld2 = ConversationAwareLibreDesk()
     pipe2 = make_pipeline(rules, decision=ACT, libredesk=ld2)
     out2 = await pipe2.run(item(conversation_uuid="conv-cache", channel=None))
@@ -340,7 +347,7 @@ async def test_read_channel_is_cached_for_next_messages(rules):
 
 
 async def test_recipients_fall_back_to_contact_email(rules):
-    """En email, `to` vacio devuelve 500 (medido). Si meta.to no existe, se usa el contacto."""
+    """In email an empty `to` returns 500 (measured). Without meta.to the contact wins."""
     payload_no_to = {
         "uuid": "m2", "type": "outgoing", "private": False, "conversation_uuid": "conv-1",
         "text_content": "Respuesta original del agente",
@@ -367,13 +374,13 @@ def sent_prefix(ld) -> str:
     return body.split("</p>")[0] + "</p>"
 
 
-# --- state que recibe JEV -----------------------------------------------------
+# --- the state JEV receives ---------------------------------------------------
 
 def test_state_does_not_duplicate_the_agent_reply_under_review():
-    """El historial ya termina en la respuesta del agente: no se repite.
+    """The history already ends with the agent reply: it is not repeated.
 
-    Medido en vivo (2026-11-12): un `Asistente:` vacio al final hacia que JEV
-    leyera el turno mas reciente como ausente y respondiera `none`.
+    Measured live (2026-11-12): an empty `Asistente:` line at the end made JEV
+    would read the newest turn as missing and answer `none`.
     """
     history = [("contact", "mi sistema esta caido"), ("agent", "agende una sesion")]
     st = composer.build_state_for_jev(
@@ -393,7 +400,7 @@ def test_state_keeps_customer_line_only_when_it_adds_information():
 
 
 def test_state_repeats_nothing_the_history_already_carries():
-    """El pipeline pasa historial Y turnos extraidos; no se duplican lineas."""
+    """The pipeline passes history AND extracted turns; lines must not duplicate."""
     h = [("contact", "urgente: caido hace 2 horas"), ("agent", "le agendo sesion")]
     st = composer.build_state_for_jev(
         customer_message="urgente: caido hace 2 horas",
@@ -403,7 +410,7 @@ def test_state_repeats_nothing_the_history_already_carries():
 
 
 def test_state_includes_agent_reply_when_history_is_empty():
-    """Sin historial (o recortado), la respuesta evaluada SI debe aparecer."""
+    """With no history (or a trimmed one) the reply under review MUST appear."""
     st = composer.build_state_for_jev(customer_message="caido", agent_message="agende",
                                       history=[])
     assert "Cliente: caido" in st
@@ -411,10 +418,10 @@ def test_state_includes_agent_reply_when_history_is_empty():
 
 
 async def test_history_reaches_the_jev_state(rules):
-    """Regresion del bug de paginacion: sin historial, JEV evalua a ciegas.
+    """Pagination regression: without history, JEV evaluates blind.
 
-    El doble simula la forma paginada real; si el parser vuelve a leer `data` como
-    lista, el state queda con una sola linea y esto falla.
+    The double simulates the real paginated shape; if the parser reads `data` as a
+    list again, the state keeps a single line and this fails.
     """
     ld = FakeLibreDesk(messages=[
         {"uuid": "c1", "sender_type": "contact", "private": False,
@@ -438,11 +445,11 @@ async def test_history_reaches_the_jev_state(rules):
 
 
 async def test_raw_channel_from_conversation_read_is_normalized(rules):
-    """Regresion medida (2026-11-12): inbox_channel="whatsapp" no tiene prefijo.
+    """Measured regression (2026-11-12): inbox_channel="whatsapp" has no prefix.
 
-    agents.yaml declara `chat`/`email`. Si el respaldo por lectura guarda el valor
-    bruto, prefix_for("whatsapp") es None y la correccion se descarta DESPUES de
-    gastar JEV y generacion.
+    agents.yaml declares `chat`/`email`. If the read fallback stores the raw value,
+    prefix_for("whatsapp") is None and the correction is discarded AFTER spending
+    JEV and generation.
     """
     ld = ConversationAwareLibreDesk()  # reporta inbox_channel="email" crudo
     pipe = make_pipeline(rules, decision=ACT, libredesk=ld)
@@ -452,7 +459,7 @@ async def test_raw_channel_from_conversation_read_is_normalized(rules):
 
 
 async def test_completion_logs_exact_payload_when_enabled(caplog):
-    """Con COMPLETION_LOG_REQUEST, el log muestra el body literal a LibreDesk."""
+    """With COMPLETION_LOG_REQUEST the log shows the literal body sent to LibreDesk."""
     import json
     import logging as lg
 
@@ -498,16 +505,16 @@ async def test_completion_stays_silent_by_default(caplog):
 
 async def test_livechat_conversation_created_still_gets_prefixed_and_published(rules):
     """Regresion medida (conv 0cfc8689, 2026-11-12): JEV actuo, Nemotron genero,
-    y la correccion se descarto por no_prefix_for_channel:livechat.
+    and the correction was discarded with no_prefix_for_channel:livechat.
 
     El handler de conversation.created debia normalizar antes de cachear; ahora
-    STATE guarda "chat" y el pipeline encuentra prefijo.
+    STATE holds "chat" and the pipeline finds a prefix.
     """
     from app.core.state import STATE as ST
     from app.jev.intake import normalize_channel
 
     conv = "conv-livechat-regression"
-    # Simula al handler: recibe inbox_channel crudo del webhook.
+    # Mimics the handler: it receives the raw inbox_channel from the webhook.
     ST.remember_channel(conv, normalize_channel("livechat"))
     assert ST.channel_for(conv) == "chat"
 
@@ -519,7 +526,7 @@ async def test_livechat_conversation_created_still_gets_prefixed_and_published(r
 
 
 async def test_copilot_engine_is_the_default_and_gets_correction_instruction(rules):
-    """JEV_USE_COPILOT=true (default): la generacion va a /ai/copilot con contexto."""
+    """JEV_USE_COPILOT=true (default): generation goes to /ai/copilot with context."""
     ld = FakeLibreDesk()
     clf = SpyClassifier() if False else None  # noqa: F841
     seen_state = {}
@@ -537,8 +544,8 @@ async def test_copilot_engine_is_the_default_and_gets_correction_instruction(rul
     assert not ld.completion_calls, "el motor legacy no debe invocarse"
     call = ld.copilot_calls[0]
     assert call["conversation_uuid"] == "conv-1"
-    assert "Corrige la respuesta del asistente" in call["message"]
-    # La politica del asistente ahora SI llega a JEV dentro del state.
+    assert "Correct the assistant's reply" in call["message"]
+    # The assistant policy now DOES reach JEV insidel state.
     st = seen_state["state"]
     assert "POLITICA DEL ASISTENTE" in st
     assert "Habla de tu." in st           # instructions del doble
@@ -559,42 +566,85 @@ async def test_legacy_completion_engine_when_flag_off(rules, monkeypatch):
 
 
 async def test_revive_post_action_reassigns_after_publishing(rules):
-    """La accion con post_action revive al bot SOLO si la publicacion exito."""
+    """A post_action option revives the bot ONLY after a successful publish."""
     ld = FakeLibreDesk()
-    revive = Decision(True, "accepted", choice="revive-action", confidence=0.9,
+    revive = Decision(True, "accepted", choice="handoff-too-early", confidence=0.9,
                       probability=0.9)
     pipe = make_pipeline(rules, decision=revive, libredesk=ld)
     out = await pipe.run(item(channel="chat"))
     assert out["outcome"] == "corrected"
-    # El ID asignado es el declarada en agents.yaml (assign_user_id), no el
-    # assistant_id (42) ni el user_id del doble si difirieran.
-    from tests.conftest import FIXTURE_ASSIGN_USER_ID
-    assert ld.assign_calls == [("conv-1", FIXTURE_ASSIGN_USER_ID)]
-    assert out["revived_assignee_id"] == FIXTURE_ASSIGN_USER_ID
+    # The reassigned id comes from agents.yaml (revive_team_id), not the
+    # assistant_id (42) nor the double's user_id.
+    from tests.conftest import FIXTURE_REVIVE_TEAM_ID
+    assert ld.team_calls == [("conv-1", FIXTURE_REVIVE_TEAM_ID)]
+    assert out["revive_team_id"] == FIXTURE_REVIVE_TEAM_ID
     assert out["revived_assistant"] is True
 
 
 async def test_no_revive_when_publish_fails(rules):
     ld = FakeLibreDesk(publish_error="channel down")
-    revive = Decision(True, "accepted", choice="revive-action", confidence=0.9,
+    revive = Decision(True, "accepted", choice="handoff-too-early", confidence=0.9,
                       probability=0.9)
     pipe = make_pipeline(rules, decision=revive, libredesk=ld)
     out = await pipe.run(item(channel="chat"))
     assert out["outcome"] == "failed"
-    assert ld.assign_calls == [], "no se reasigna si no se publico nada"
+    assert ld.team_calls == [], "no se reasigna si no se publico nada"
 
 
 async def test_plain_actions_never_reassign(rules):
     ld = FakeLibreDesk()
     pipe = make_pipeline(rules, decision=ACT, libredesk=ld)
     await pipe.run(item(channel="chat"))
-    assert ld.assign_calls == []
+    assert ld.team_calls == []
+
+
+# --- Handoff evidence gates the option ---------------------------------------
+
+async def test_handoff_option_only_offered_after_a_real_handoff(rules):
+    """Without evidence of abandonment, criteria MUST NOT include the option.
+
+    Reason measured live: always presenting "hand off too early" made JEV prefer
+    deriving over rewriting, so a correction that should have revived the bot ran
+    its post_action against a conversation nobody had abandoned.
+    """
+    seen = {}
+
+    class Spy:
+        async def classify(self, state, instructions, criteria, **kw):
+            seen["criteria"] = dict(criteria)
+            return ACT
+
+    pipe = make_pipeline(rules, libredesk=FakeLibreDesk(), classifier=Spy())
+    await pipe.run(item(channel="chat"))
+    assert "handoff-too-early" not in seen["criteria"]
+
+
+async def test_handoff_option_offered_when_conversation_was_abandoned(rules):
+    from app.core.state import STATE as ST
+
+    ST.remember_handoff("conv-aband")
+    seen = {}
+
+    class Spy:
+        async def classify(self, state, instructions, criteria, **kw):
+            seen["criteria"] = dict(criteria)
+            return Decision(True, "accepted", choice="handoff-too-early",
+                            confidence=0.9, probability=0.9)
+
+    ld = FakeLibreDesk()
+    pipe = make_pipeline(rules, libredesk=ld, classifier=Spy())
+    out = await pipe.run(item(conversation_uuid="conv-aband", channel="chat",
+                              handed_off=True))
+    assert "handoff-too-early" in seen["criteria"]
+    assert out["outcome"] == "corrected"
+    # A successful revive clears the flag: the next reply is judged without it.
+    assert ST.had_handoff("conv-aband") is False
 
 
 # --- CLASSIFIER_LOG_REQUEST --------------------------------------------------
 
 async def test_classifier_logs_exact_payload_when_enabled(rules, caplog):
-    """Con el flag prendido, el log muestra el body literal que se mandaria."""
+    """With the flag on, the log shows the exact body that would be sent."""
     import json
     import logging as lg
 
@@ -625,7 +675,7 @@ async def test_classifier_logs_exact_payload_when_enabled(rules, caplog):
 
 
 async def test_classifier_stays_silent_by_default(caplog):
-    """Off por defecto: `state` lleva datos del cliente y no va a logs sin permiso."""
+    """Off by default: `state` carries customer data and must not reach logs."""
     import logging as lg
 
     from app.jev.classifier import Classifier

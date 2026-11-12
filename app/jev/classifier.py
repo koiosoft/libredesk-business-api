@@ -1,34 +1,34 @@
-"""Cliente del clasificador JEV (TypeSafe servido por OpenRouter).
+"""JEV (TypeSafe) classifier client, served through OpenRouter.
 
-Request verificado contra la API real:
+Request verified against the real API:
 
     POST https://openrouter.ai/api/alpha/decisions
     { "model": "typesafe/jev-1.14",
-      "state": "<texto a evaluar>",
+      "state": "<text to evaluate>",
       "questions": { "<id>": {"type":"choice","instructions":"...","criteria":{...}} } }
 
-Response verificada:
+Response verified:
 
     { "answers": { "<id>": {"type":"choice","choice":"returns",
                             "probabilities":{"returns":1,"shipping":0},
                             "confidence":1} },
       "usage": {"input_tokens":357,"output_tokens":38,"cost":0.000014994} }
 
-Tres hechos medidos que definen este modulo:
+Three measured facts that define this module:
 
-  - JEIV es modelo de DECISIONES. El endpoint estandar chat/completions lo RECHAZA
-    con "is a decisions model and cannot be used with the chat/completions
-    endpoint". Por eso CLASSIFIER_URL es configurable y no se deriva del base URL
-    de nemotron.
-  - `supported_parameters: []` en la ficha del modelo. No se envia temperature,
-    reasoning ni max_tokens: OpenRouter los ignora en silencio, configurarlos
-    seria deuda invisible.
-  - `confidence` y `probabilities` son ejes DISTINTOS. Medido sobre criterios de
-    Koiosoft: eleccion close-forward-human con probabilidad 0.37 devolvio
-    confidence 0.16. Se evaluan los dos; ninguno solo decide.
+  - JEV is a DECISIONS model. The standard chat/completions endpoint REJECTS it
+    with "is a decisions model and cannot be used with the chat/completions
+    endpoint". That is why CLASSIFIER_URL is configurable and never derived from
+    the nemotron base URL.
+  - `supported_parameters: []` in the model card. temperature, reasoning_effort and
+    max_tokens are not sent: OpenRouter ignores them silently, so configuring them
+    would only create invisible debt.
+  - `confidence` and `probabilities` are DISTINCT axes. Measured against Koiosoft
+    criteria: choice close-forward-human at probability 0.37 returned confidence
+    0.16. Both are evaluated; neither decides alone.
 
-El error NUNCA publica. Clasificar mal es recuperable; publicar basura en un canal
-de cliente no.
+Errors NEVER publish. Misclassifying is recoverable; publishing garbage into a
+customer channel is not.
 """
 
 from __future__ import annotations
@@ -42,19 +42,19 @@ import httpx
 
 log = logging.getLogger("hub-api.jev.classifier")
 
-# Identificador de la pregunta unica del MVP. O3 del plan decidio top-1: JEV elige
-# UNA opcion, y mezclar "pregunta el stack" + "cierra y pasa a humano" en un mismo
+# Identifier of the single MVP question. Plan O3 chose top-1: JEV picks
+# ONE option, and mixing "ask the stack" + "close and hand to human" in one
 # prompt puede contradecirse.
 ACTION_QUESTION = "action"
 
-# Tope duro de opciones. TypeSafe admite hasta 255, pero cada opcion cuesta tokens
-# de entrada (~$0.000000042/token medidos) y ensucia la decision.
+# Hard cap on options. TypeSafe allows up to 255, but each option costs input
+# input tokens (~$0.000000042/token measured) and muddies the decision.
 MAX_OPTIONS = 255
 
 
 @dataclass(frozen=True)
 class Decision:
-    """Resultado de clasificar un mensaje."""
+    """Result of classifying one message."""
 
     should_act: bool
     reason: str
@@ -78,7 +78,7 @@ class Decision:
 
 def build_request(state: str, instructions: str, criteria: dict[str, str],
                   model: str) -> dict[str, Any]:
-    """Arma el body segun el contrato verificado. Puro: testeable sin red."""
+    """Builds the body per the verified contract. Pure: testable without network."""
     if not criteria:
         raise ValueError("criteria empty: nothing to classify against")
     if len(criteria) > MAX_OPTIONS:
@@ -91,7 +91,7 @@ def build_request(state: str, instructions: str, criteria: dict[str, str],
                 "type": "choice",
                 "instructions": instructions,
                 # Las claves de prompts.yaml van tal cual: JEV acepta mapa
-                # {nombre -> descripcion}, misma forma que el YAML (V21).
+                # {name -> description}, same shape as the YAML (V21).
                 "criteria": criteria,
             }
         },
@@ -100,10 +100,10 @@ def build_request(state: str, instructions: str, criteria: dict[str, str],
 
 def parse_response(data: dict[str, Any], min_confidence: float,
                    min_probability: float) -> Decision:
-    """Lee `answers.action` y aplica los DOS umbrales.
+    """Reads `answers.action` and applies BOTH thresholds.
 
-    Sin `decision` valida no se actua: una respuesta inesperada (modelo distinto,
-    campo ausente, pregunta ausente) produce should_act=False con motivo explicito.
+    Without a valid decision nothing runs: an unexpected response (different model,
+    missing field, missing question) yields should_act=False with an explicit reason.
     """
     answers = data.get("answers")
     if not isinstance(answers, dict):
@@ -152,8 +152,8 @@ def parse_response(data: dict[str, Any], min_confidence: float,
         if isinstance(usage.get("input_tokens"), int) else None,
     )
 
-    # `none` gana por regla de negocio, no por umbral: si JEV dice no intervenir,
-    # no se interviene aunque estuviera segurisimo.
+    # `none` wins by business rule, not threshold: if JEV says do not intervene,
+    # do not intervene even when extremely confident.
     if choice == "none":
         return Decision(**{**decision.__dict__, "reason": "jev_said_none"})
 
@@ -167,7 +167,7 @@ def parse_response(data: dict[str, Any], min_confidence: float,
 
 
 class Classifier:
-    """Envuelve el HTTP saliente. Un solo cliente compartido (Fase D)."""
+    """Wraps the outbound HTTP. One shared client (Phase D)."""
 
     def __init__(self, client: httpx.AsyncClient, *, url: str, api_key: str,
                  model: str, timeout_s: float = 10.0,
@@ -182,7 +182,7 @@ class Classifier:
     async def classify(self, state: str, instructions: str,
                        criteria: dict[str, str], *, min_confidence: float,
                        min_probability: float) -> Decision:
-        """Clasifica. Cualquier fallo devuelve should_act=False; nunca lanza al caller."""
+        """Classifies. Any failure returns should_act=False; never raises to the caller."""
         try:
             body = build_request(state, instructions, criteria, self._model)
         except ValueError as exc:
@@ -211,8 +211,8 @@ class Classifier:
                 timeout=self._timeout,
             )
         except httpx.HTTPError as exc:
-            # Red, timeout, DNS. No publicar es la unica salida correcta: LibreDesk
-            # no reintenta, asi que reintentar aqui no tiene coste para nadie.
+            # Network, timeout, DNS. Not publishing is the only correct outcome:
+            # LibreDesk never retries, so retrying here costs nobody anything.
             log.warning("classifier network error: %s", exc)
             return Decision(False, "network_error")
 

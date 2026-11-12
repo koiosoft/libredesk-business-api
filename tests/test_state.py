@@ -1,8 +1,8 @@
-"""Pruebas del estado en memoria: dedupe, canal y tope de correcciones.
+"""In-memory state tests: dedupe, channel and the correction cap.
 
-Sustituyen a las pruebas del registro persistente. El contrato que importa es el
-mismo (idempotencia + tope por conversacion); lo que cambia es donde vive el dato,
-y eso esta documentado como decision en app/core/state.py.
+They replace the persistent-store tests. The contract that matters is the same
+(idempotency + per-conversation cap); what changes is where the data lives,
+and that is documented as a decision in app/core/state.py.
 """
 
 from __future__ import annotations
@@ -40,14 +40,14 @@ def test_dedupe_cache_is_bounded():
     for i in range(DEDUPE_MAX + 500):
         st.seen_before(f"k{i}")
     assert len(st._seen) == DEDUPE_MAX
-    # El mas viejo fue expulsado; la reentrega de ese se consideraria nueva.
-    # Es el intercambio aceptado por quedarse en RAM.
+    # The oldest entry was evicted; re-delivering it would now look new.
+    # That is the trade accepted by staying in RAM.
     assert "k0" not in st._seen
     assert st.seen_before(f"k{DEDUPE_MAX + 499}") is True
 
 
 def test_concurrent_deliveries_only_one_wins():
-    """'comprobar-y-marcar' atomico: N hilos con la misma clave -> 1 nuevo."""
+    """Atomic check-and-mark: N threads with the same key -> exactly 1 new."""
     st = HubState()
     results: list[bool] = []
     barrier = threading.Barrier(8)
@@ -66,7 +66,7 @@ def test_concurrent_deliveries_only_one_wins():
     assert results.count(True) == 7
 
 
-# --- Canal por conversacion ------------------------------------------------
+# --- Channel per conversation ------------------------------------------------
 
 def test_channel_roundtrip():
     st = HubState()
@@ -112,7 +112,7 @@ def test_limit_is_per_conversation():
 
 
 def test_concurrent_reservations_respect_the_limit():
-    """Dos pipelines concurrentes no deben pasarse del tope leyendo el mismo conteo."""
+    """Two concurrent pipelines must not exceed the cap by reading one count."""
     st = HubState()
     granted: list[bool] = []
     lock = threading.Lock()

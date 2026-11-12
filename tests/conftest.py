@@ -18,15 +18,16 @@ from pathlib import Path
 
 import pytest
 
-# Reglas de prueba: cumplen el CONTRATO (question.instructions, options con
-# `none`, agente habilitado con prefijos por canal, augmenter presente) pero no
+# Test rules satisfy the CONTRACT (question.instructions, options with `none`,
+# an enabled agent with per-channel prefixes, augmenter present) but they are not
 # are NOT the repo's. rules/*.yaml is edited live on purpose, so wiring contract
 # tests to that content would break CI whenever an action or agent id changes --
 # with no bug involved. Schema validation against the real files lives only in
 # tests/test_rules.py::test_repo_rules_load.
 FIXTURE_ASSISTANT_ID = 42
 FIXTURE_CHOICE = "some-action"
-FIXTURE_ASSIGN_USER_ID = 9011  # users.id del bot en la fixture
+FIXTURE_REVIVE_TEAM_ID = 2
+FIXTURE_BOT_USER_ID = 9011  # users.id of the bot in the fixture
 
 FIXTURE_OPTIONS = """\
 question:
@@ -34,8 +35,8 @@ question:
 options:
   none: No intervenir.
   some-action: Reescribe la respuesta para cerrar y derivar a un humano.
-  revive-action:
-    text: Reescribe agregando una pregunta de levantamiento.
+  handoff-too-early:
+    text: Reescribe la respuesta abandonada y devuelve el lead al asistente.
     post_action: revive-assistant
 """
 
@@ -44,11 +45,12 @@ agents:
   {FIXTURE_ASSISTANT_ID}:
     enabled: true
     name: Fixture Agent
-    assign_user_id: {FIXTURE_ASSIGN_USER_ID}
+    revive_team_id: {FIXTURE_REVIVE_TEAM_ID}
+    bot_user_id: {FIXTURE_BOT_USER_ID}
     prefixes:
-      # Texto PLANO a proposito: with_prefix() escapa y envuelve en <p>, asi que un
-      # YAML con HTML ya hecho se publicaria doblemente escapado. Distintos por
-      # canal para que los testes puedan discriminar cual se aplico.
+      # Deliberately PLAIN text: with_prefix() escapes and wraps in <p>, so a YAML
+      # holding ready-made HTML would publish double-escaped. Different per channel
+      # so tests can tell which prefix was applied.
       chat: "Nota de chat"
       email: "Nota de correo"
 """
@@ -59,7 +61,7 @@ FIXTURE_AUGMENTER = "# prompt-augmenter (fixture)\n\nComposicion: ROL, ACCION, P
 def write_rules(tmp_path: Path, *, options_yaml: str = FIXTURE_OPTIONS,
                 agents_yaml: str = FIXTURE_AGENTS,
                 augmenter_md: str = FIXTURE_AUGMENTER) -> Path:
-    """Directorio de reglas valido segun el contrato, listo para mutar por caso."""
+    """Contract-valid rule directory on disk (real YAML load), mutable per case."""
     d = tmp_path / "rules"
     d.mkdir(exist_ok=True)
     (d / "prompts.yaml").write_text(options_yaml, encoding="utf-8")
@@ -82,10 +84,10 @@ def _rules_dir_for_app(monkeypatch, tmp_path_factory):
 
 @pytest.fixture
 def make_rules(tmp_path: Path):
-    """Factory para casos que necesitan reglas MUTADAS (una sola cosa por caso).
+    """Factory for cases that need MUTATED rules (one thing changed per case).
 
-    Nombre distinto al helper para no pisarlo: los testes que solo quieren reglas
-    validas usan `rules` / `rules_dir`.
+    Named apart from the helper so it cannot shadow it: tests that only want valid
+    rules use `rules` / `rules_dir`.
     """
     def _factory(**kw) -> Path:
         return write_rules(tmp_path, **kw)
@@ -124,12 +126,12 @@ def _env(monkeypatch):
     monkeypatch.setenv("CLASSIFIER_API_KEY", TEST_CLASSIFIER_KEY)
     monkeypatch.setenv("CLASSIFIER_URL", "https://openrouter.test/api/alpha/decisions")
     monkeypatch.setenv("CLASSIFIER_MODEL", "typesafe/jev-test")
-    # HUB_RULES_DIR lo fija el fixture autouse _rules_dir_for_app con YAML de
-    # prueba; nunca se apunta a rules/ del repo (ese contenido cambia en vivo).
+    # PROMPT_AUGMENTER_RULE_PATH is pinned by the autouse fixture
+    # _rules_dir_for_app to test YAML; tests never point at the repo's rules/.
 
-    # El dedupe vive en memoria (app/core/state.py). Sin reinicio por test, el
-    # segundo caso que enviara el mismo payload heredaria el evento como
-    # "duplicado" del anterior y la prueba fallaria por contaminacion de estado.
+    # Dedupe lives in memory (app/core/state.py). Without a per-test reset, the
+    # second case sending the same payload would inherit the event as "duplicate"
+    # of the previous one and fail from state contamination.
     from app.core.state import STATE
 
     monkeypatch.setattr(STATE, "_seen", type(STATE._seen)())

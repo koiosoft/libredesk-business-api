@@ -1,10 +1,10 @@
-"""Clientes HTTP compartidos y semaforo de concurrencia, creados en el arranque.
+"""Shared HTTP clients and the concurrency semaphore, created at startup.
 
-Un solo httpx.AsyncClient para todo el proceso: reutiliza conexiones y evita el
-coste de handshake por evento. Se cierra al apagar.
+One httpx.AsyncClient for the whole process: it reuses connections and avoids the
+handshake cost per event. Closed on shutdown.
 
-El semaforo limita los pipelines SIMULTANEOS (R1 del plan). No limita la recepcion:
-el 202 se responde siempre rapido; lo que se encola es el trabajo lento.
+The semaphore bounds SIMULTANEOUS pipelines (plan R1). It does not bound intake:
+the 202 is always answered fast; what queues is the slow work.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ class HubClients:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        # Timeout global generoso: /api/v1/ai/completion tarda segundos con
+        # Generous global timeout: /api/v1/ai/completion takes seconds with
         # proveedor real (medido contra nemotron: 3-15s segun longitud).
         self.http = httpx.AsyncClient(
             timeout=httpx.Timeout(30.0, connect=5.0),
@@ -49,8 +49,12 @@ class HubClients:
             api_key=settings.libredesk_api_key,
             api_secret=settings.libredesk_api_secret,
             log_request=settings.completion_log_request,
+            timeout_s=settings.jev_generation_timeout_s,
         )
         self.semaphore = asyncio.Semaphore(settings.jev_concurrency)
+        # Strong references for fire-and-forget diagnostics (confirming a handoff
+        # from private notes). Without this the loop may collect them mid-flight.
+        self.background_tasks: set[asyncio.Task] = set()
 
     async def aclose(self) -> None:
         await self.http.aclose()
@@ -81,11 +85,11 @@ async def clients(settings: Settings) -> AsyncIterator[HubClients]:
 
 async def run_guarded(hub: HubClients, pipeline: EnforcementPipeline,
                       item: dict) -> dict:
-    """Corre el pipeline bajo el semaforo.
+    """Runs the pipeline under the semaphore.
 
-    El limite cubre JEV + generacion + publicacion como una unidad: si solo se
-    limitara el paso lento, una rafaga mantendria N trabajos abiertos esperando
-    turno dentro del propio trabajo.
+    The limit covers JEV + generation + publishing as one unit: capping only the
+    slow step would let a burst keep N jobs open waiting their turn inside the
+    job itself.
     """
     async with hub.semaphore:
         return await pipeline.run(item)

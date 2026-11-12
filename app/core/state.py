@@ -54,6 +54,9 @@ class HubState:
         self._seen: OrderedDict[str, bool] = OrderedDict()
         # conversation_uuid -> inbox_channel (source: conversation.created).
         self._channels: OrderedDict[str, str] = OrderedDict()
+        # conversation_uuid -> True once the assistant handed the conversation to a
+        # human. Observed from webhooks only; cleared by a successful revive.
+        self._handoffs: OrderedDict[str, bool] = OrderedDict()
         # conversation_uuid -> published corrections.
         self._corrections: dict[str, int] = {}
 
@@ -90,6 +93,28 @@ class HubState:
         with self._lock:
             return self._channels.get(conversation_uuid)
 
+    # --- Handoff tracking ---------------------------------------------------
+
+    def remember_handoff(self, conversation_uuid: str) -> None:
+        """Mark that the AI agent gave this conversation up to a human."""
+        if not conversation_uuid:
+            return
+        with self._lock:
+            self._handoffs[conversation_uuid] = True
+            while len(self._handoffs) > CHANNELS_MAX:
+                self._handoffs.popitem(last=False)
+
+    def had_handoff(self, conversation_uuid: str | None) -> bool:
+        if not conversation_uuid:
+            return False
+        with self._lock:
+            return bool(self._handoffs.get(conversation_uuid))
+
+    def clear_handoff(self, conversation_uuid: str) -> None:
+        """The bot is back in the conversation: forget the abandonment flag."""
+        with self._lock:
+            self._handoffs.pop(conversation_uuid, None)
+
     # --- Correction cap -----------------------------------------------------
 
     def corrections_count(self, conversation_uuid: str) -> int:
@@ -117,6 +142,7 @@ class HubState:
             return {
                 "deduped_events": len(self._seen),
                 "conversations_with_channel": len(self._channels),
+                "conversations_handed_off": len(self._handoffs),
                 "conversations_corrected": len(self._corrections),
                 "corrections_total": sum(self._corrections.values()),
             }

@@ -1,7 +1,7 @@
-"""Pruebas del contrato de entrada: filtro D3, guardas G1/G2/G3 y clave de dedupe.
+"""Entry contract tests: filter D3, guards G1/G2/G3 and the dedupe key.
 
-Ninguna hace red ni base de datos: se ejecutan contra dict que replican el payload
-real de `message.created` verificado en el fuente de LibreDesk (get-message proyecta
+None touches network or database: they run against dicts replicating the real
+`message.created` payload verified in the LibreDesk source (get-message projects
 author.type; postReply() inyecta meta.ai_assistant_id).
 """
 
@@ -25,9 +25,9 @@ from tests.conftest import FIXTURE_ASSISTANT_ID
 
 
 def ai_message_body(**overrides) -> dict:
-    """Payload real de message.created para un mensaje de Agente IA.
+    """Real message.created payload for an AI agent message.
 
-    Forma verificada en internal/conversation/models/models.go (Message) y en la
+    Shape verified in internal/conversation/models/models.go (Message) and in the
     documentacion de webhooks de LibreDesk.
     """
     payload = {
@@ -62,7 +62,7 @@ def test_ai_outgoing_public_message_is_accepted(rules):
     assert r.dedupe_key.endswith("123e4567-e89b-12d3-a456-426614174000")
 
 
-# --- Filtro D3: cada condicion por separado --------------------------------
+# --- Filter D3: each condition on its own ----------------------------------
 
 @pytest.mark.parametrize("override,expected", [
     ({"type": "incoming"}, "not_outgoing"),
@@ -86,7 +86,7 @@ def test_each_d3_condition_alone_rejects(rules, override, expected):
 
 
 def test_private_missing_is_rejected_not_assumed_public(rules):
-    """Sin clave `private` no se asume publico: fail-closed."""
+    """Without a `private` key nothing is assumed public: fail-closed."""
     body = ai_message_body()
     del body["payload"]["private"]
     r = evaluate_message_created(body, rules=rules)
@@ -101,8 +101,8 @@ def test_non_dict_payload_is_rejected(rules):
 # --- G3: allowlist fail-closed ----------------------------------------------
 
 def test_agent_not_in_allowlist_is_ignored(rules):
-    """ID valido pero no declarado => no se evalua nada (V3: asistentes borrados
-    siguen apareciendo como autores de mensajes viejos)."""
+    """A valid but undeclared id means nothing is evaluated (V3: deleted assistants
+    keep appearing as authors of old messages)."""
     body = ai_message_body(meta={"ai_assistant_id": 999})
     r = evaluate_message_created(body, rules=rules)
     assert r.accept is False
@@ -110,9 +110,9 @@ def test_agent_not_in_allowlist_is_ignored(rules):
 
 
 def test_declared_but_disabled_agent_is_ignored(make_rules):
-    """Agente en la allowlist pero apagado => ignorar en silencio.
+    """An allowlisted but disabled agent is ignored silently.
 
-    Se escriben ambas reglas desde cero: no se copia rules/ del repo porque su
+    Both rule files are written from scratch: the repo rules/ is not copied because
     contenido (ids, acciones, prefijos) cambia en vivo.
     """
     d = make_rules(agents_yaml=(
@@ -123,20 +123,28 @@ def test_declared_but_disabled_agent_is_ignored(make_rules):
     assert r.reason == "agent_disabled"
 
 
+def test_handed_off_flag_is_carried_in_the_verdict(rules):
+    """intake does not decide the handoff: it transports it for the pipeline."""
+    r = evaluate_message_created(ai_message_body(), rules=rules, handed_off=True)
+    assert r.accept is True and r.handed_off is True
+    r2 = evaluate_message_created(ai_message_body(uuid="m-fresh"), rules=rules)
+    assert r2.handed_off is False
+
+
 # --- G2: eco propio (defensa secundaria) ------------------------------------
 
 def test_own_echo_is_rejected_even_with_ai_signals(rules):
-    """Si algun dia echo_id llegara en el payload, se ignora igual."""
+    """If echo_id ever does arrive in the payload, it is ignored the same way."""
     body = ai_message_body(meta={"ai_assistant_id": FIXTURE_ASSISTANT_ID, "echo_id": f"{ECHO_PREFIX}abc"})
     r = evaluate_message_created(body, rules=rules)
     assert r.accept is False and r.reason == "own_output_echo"
 
 
 def test_hub_own_message_is_rejected_by_d3_alone(rules):
-    """Prueba del circulo cerrado SIN depender de echo_id.
+    """Closes the loop WITHOUT depending on echo_id.
 
-    Un mensaje publicado por hub-api va firmado por un usuario 'agent': author.type
-    nunca es 'ai_assistant' y no hay ai_assistant_id. D3 lo rechaza dos veces.
+    A message published by hub-api is signed by a user of type 'agent': author.type
+    is never 'ai_assistant' and there is no ai_assistant_id. D3 rejects it twice.
     """
     hub_message = {
         "event": "message.created",
@@ -157,7 +165,7 @@ def test_hub_own_message_is_rejected_by_d3_alone(rules):
 # --- Clave de dedupe --------------------------------------------------------
 
 def test_dedupe_key_uses_message_uuid_not_timestamp(rules):
-    """Dos entregas del mismo mensaje -> misma clave (idempotencia duradera)."""
+    """Two deliveries of the same message -> same key (durable idempotency)."""
     a = ai_message_body(timestamp="2026-11-11T20:00:00Z")
     b = ai_message_body(timestamp="2026-11-11T20:00:59Z")
     assert build_dedupe_key("message.created", a) == build_dedupe_key("message.created", b)
@@ -170,10 +178,10 @@ def test_different_messages_get_different_keys():
 
 
 def test_webhook_test_events_do_not_collide():
-    """Send test manda solo {id,name}: sin UUID, se cae a hash del body.
+    """Send test sends only {id,name}: with no UUID it falls back to a body hash.
 
-    Dos pruebas distintas (nombre diferente) no pueden compartir clave, y por tanto
-    la segunda no se descarta en silencio — el bug que tenia la clave anterior.
+    Two different tests (different names) must not share a key, so the second one
+    is not silently discarded -- the bug the previous key had.
     """
     t1 = {"event": "webhook.test", "timestamp": "2026-11-11T20:00:00Z",
           "payload": {"id": 1, "name": "Dev -> business-api"}}
@@ -185,7 +193,7 @@ def test_webhook_test_events_do_not_collide():
 
 
 def test_same_webhook_test_is_still_idempotent():
-    """Reentrega del mismo test si produce la misma clave."""
+    """Redelivering the same test produces the same key when it should."""
     t = {"event": "webhook.test", "timestamp": "X", "payload": {"id": 1, "name": "W"}}
     assert build_dedupe_key("webhook.test", t) == build_dedupe_key("webhook.test", t)
 
@@ -201,7 +209,7 @@ def test_channel_normalization(raw, expected):
 
 
 def test_message_created_has_no_channel_and_returns_none():
-    """V13: el payload NO trae inbox_id ni inbox_channel. Resuelve None = preguntar."""
+    """V13: the payload carries neither inbox_id nor inbox_channel. None = ask."""
     body = ai_message_body()
     assert "inbox_channel" not in body["payload"]
     assert resolve_channel(body) is None
@@ -214,6 +222,6 @@ def test_channel_from_conversation_cache():
 
 
 def test_channel_read_directly_when_present():
-    """conversation.created si lo trae (V14); se normaliza igual."""
+    """conversation.created does carry it (V14) and is normalized the same way."""
     body = {"event": "conversation.created", "payload": {"inbox_channel": "whatsapp"}}
     assert resolve_channel(body) == "chat"

@@ -1,28 +1,29 @@
-"""Guardas de entrada: decide si un evento debe entrar al pipeline, y por que no.
+"""Entry guards: decide whether an event enters the pipeline, and why not.
 
-Separado del HTTP por dos razones: estas reglas son lo unico que impide publicar
-basura en un canal de cliente, y necesitan probarse sin red ni base de datos.
+Separated from HTTP for two reasons: these rules are the only thing preventing
+garbage from reaching a customer channel, and they must be testable without
+network or database.
 
-Filtro D3 — las CUATRO condiciones, todas necesarias:
+Filter D3 -- the FOUR conditions, all required:
 
     payload.type == "outgoing"
     AND payload.private is False
     AND payload.meta.ai_assistant_id > 0
     AND payload.author.type == "ai_assistant"
 
-Se exigen las dos senales de IA aunque parezcan redundantes, y son realmente
-independientes: `meta.ai_assistant_id` la escribe postReply() en memoria
-(internal/aiagent/worker.go:441) y `author.type` sale del JOIN a users en el
-read-model (internal/conversation/queries.sql -> get-message). Que ambas coincidan
-es una comprobacion de integridad barata antes de gastar JEV + LLM.
+Both AI signals are demanded even though they look redundant, and they really are
+independent: `meta.ai_assistant_id` is written by postReply() in memory
+(internal/aiagent/worker.go:441) while `author.type` comes from the JOIN to users
+in the read-model (internal/conversation/queries.sql -> get-message). Requiring
+both to agree is a cheap integrity check before spending JEV + LLM.
 
-G2 (echo_id) es DEFENSA SECUNDARIA, no la barrera principal. Corrijo aqui el plan:
-FEATURE.md le daba rol doble (anti-bucle + llave de idempotencia), pero lo unico
-que vi garantizado en el fuente es su entrega por WebSocket
-(internal/conversation/ws.go:53-54); su paso por el payload del webhook no esta
-documentado. La barrera real es D3: un mensaje publicado por hub-api queda firmado
-por un usuario tipo 'agent', nunca 'ai_assistant', y sin ai_assistant_id, asi que
-D3 lo rechaza solo. La idempotencia se apoya en payload.uuid, que siempre llega.
+G2 (echo_id) is SECONDARY DEFENSE, not the main barrier. Correcting the plan here:
+FEATURE.md gave it a double role (anti-loop + idempotency key), but the only thing
+verified in the source is its WebSocket delivery
+(internal/conversation/ws.go:53-54); its presence in the webhook payload is not
+documented. The real barrier is D3: a message published by hub-api is signed by a
+user of type 'agent', never 'ai_assistant', and with no ai_assistant_id, so D3
+rejects it on its own. Idempotency relies on payload.uuid, which always arrives.
 """
 
 from __future__ import annotations
@@ -33,15 +34,15 @@ from typing import Any
 
 ECHO_PREFIX = "jev-retry:"
 
-# Autor que produce nuestros propios mensajes. Verificado: sender_type valido es
-# enum ('agent','contact') y cmd/messages.go rechaza cualquier otro valor, asi que
-# hub-api publica como 'agent' con su propio usuario.
+# Author that produces our own messages. Verified: the valid sender_type enum is
+# enum ('agent','contact') and cmd/messages.go rejects anything else, so
+# hub-api publishes as 'agent' with its own user.
 HUB_AUTHOR_TYPES = ("agent",)
 
 
 @dataclass(frozen=True)
 class IntakeResult:
-    """Veredicto de la puerta de entrada."""
+    """Gatekeeper verdict."""
 
     accept: bool
     reason: str
@@ -49,18 +50,22 @@ class IntakeResult:
     conversation_uuid: str | None = None
     message_uuid: str | None = None
     assistant_id: int | None = None
+    # True when the assistant had abandoned this conversation (seen through
+    # conversation.unassigned or an assistant-authored handoff note). The pipeline
+    # offers handoff-too-early only when it is set.
+    handed_off: bool = False
 
 
 def build_dedupe_key(event_name: str, body: dict[str, Any]) -> str:
-    """Clave estable para idempotencia, derivada del contenido, no del timestamp.
+    """Stable idempotency key, derived from content rather than the timestamp.
 
-    Para message.created/message.updated se usa el UUID del mensaje: es unico por
+    For message.created/message.updated the message UUID is used: unique per
     definicion y sobrevive a reinicios y replicas.
 
-    El fallback por hash del body existe porque `webhook.test` manda solo
-    {id, name} (verificado en SendTestWebhook): sin entidad alguna, la clave vieja
-    `event|timestamp|uuid_vacio` producia el mismo valor para todas las pruebas y la
-    segunda del mismo segundo se descartaba en silencio.
+    The body-hash fallback exists because `webhook.test` sends only
+    {id, name} (verified in SendTestWebhook): with no entity at all, the old key
+    `event|timestamp|empty_uuid` produced the same value for every test and the
+    second one inside the same second was silently discarded.
     """
     payload = body.get("payload") or {}
     if isinstance(payload, dict):
@@ -76,15 +81,16 @@ def _assistant_id(meta: Any) -> int | None:
     if not isinstance(meta, dict):
         return None
     value = meta.get("ai_assistant_id")
-    if isinstance(value, bool):  # bool es int en Python; nunca es un ID valido.
+    if isinstance(value, bool):  # bool is int in Python; never a valid ID.
         return None
     if isinstance(value, int) and value > 0:
         return value
     return None
 
 
-def evaluate_message_created(body: dict[str, Any], *, rules) -> IntakeResult:
-    """Puerta de entrada para `message.created`. No hace I/O de ningun tipo."""
+def evaluate_message_created(body: dict[str, Any], *, rules,
+                             handed_off: bool = False) -> IntakeResult:
+    """Entry gate for `message.created`. Performs no I/O of any kind."""
     payload = body.get("payload") or {}
     if not isinstance(payload, dict):
         return IntakeResult(False, "payload_not_object",
@@ -100,18 +106,19 @@ def evaluate_message_created(body: dict[str, Any], *, rules) -> IntakeResult:
         conversation_uuid=conv_uuid,
         message_uuid=msg_uuid,
         assistant_id=assistant_id,
+        handed_off=handed_off,
     )
 
-    # --- G2 (secundaria): nuestra propia salida, si el eco llegara. ---
+    # --- G2 (secondary): our own output, if the echo ever arrives. ---
     echo = meta.get("echo_id") if isinstance(meta, dict) else None
     if isinstance(echo, str) and echo.startswith(ECHO_PREFIX):
         return IntakeResult(False, "own_output_echo", **base)
 
-    # --- D3: las cuatro condiciones, en orden de coste creciente de analisis. ---
+    # --- D3: the four conditions, ordered by rising analysis cost. ---
     if payload.get("type") != "outgoing":
         return IntakeResult(False, "not_outgoing", **base)
 
-    # private puede venir como bool o faltar; `is False` exige el booleano real.
+    # private may arrive as a bool or be absent; `is False` demands the real one.
     if payload.get("private") is not False:
         return IntakeResult(False, "private_or_missing", **base)
 
@@ -123,7 +130,7 @@ def evaluate_message_created(body: dict[str, Any], *, rules) -> IntakeResult:
     if author_type != "ai_assistant":
         return IntakeResult(False, "author_not_ai_assistant", **base)
 
-    # --- G3: allowlist fail-closed. ID ausente = no se toca nada. ---
+    # --- G3: fail-closed allowlist. Absent id = touch nothing. ---
     if not rules.is_evaluable(assistant_id):
         declared = rules.agent(assistant_id) is not None
         reason = "agent_disabled" if declared else "agent_not_allowlisted"
@@ -133,17 +140,17 @@ def evaluate_message_created(body: dict[str, Any], *, rules) -> IntakeResult:
 
 
 def resolve_channel(body: dict[str, Any], *, known: dict[str, str] | None = None) -> str | None:
-    """Canal del inbox para elegir prefijo.
+    """Inbox channel used to pick the prefix.
 
-    Limitacion verificada (V13): el payload de message.created NO incluye inbox_id
-    ni inbox_channel — Message.InboxID es `json:"-"` y get-messages no proyecta el
-    canal. Por eso el canal se obtiene de otra fuente:
+    Verified limitation (V13): the message.created payload includes neither
+    inbox_id nor inbox_channel -- Message.InboxID is `json:"-"` and get-messages
+    never projects the channel. So the channel comes from elsewhere:
 
-      1. cache por conversacion alimentado por conversation.created (si trae
-         inbox_channel, V14), o
-      2. lectura directa por API/BD en el pipeline.
+      1. a per-conversation cache fed by conversation.created (when it carries
+         inbox_channel, V14), or
+      2. a direct API/DB read inside the pipeline.
 
-    Aqui solo se resuelve lo ya conocido; None significa "preguntar despues".
+    Only known sources are consulted here; None means "askeguntar despues".
     """
     payload = body.get("payload") or {}
     if isinstance(payload, dict):
@@ -159,8 +166,8 @@ def resolve_channel(body: dict[str, Any], *, known: dict[str, str] | None = None
 def normalize_channel(channel: str) -> str:
     """Canal de LibreDesk -> clave de prefijo en agents.yaml.
 
-    LiveChat y WhatsApp comparten tratamiento (`chat`); email tiene el suyo.
-    Se normaliza aqui y no en YAML para que anadir un canal nuevo sea una linea,
+    LiveChat and WhatsApp share treatment (`chat`); email has its own.
+    Normalized here rather than in YAML so adding a channel is one line,
     no editar tres archivos de reglas.
     """
     ch = (channel or "").strip().lower()
