@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+### Fixed
+- **Default rule set no longer points at a gitignored directory.** `PROMPT_AUGMENTER_RULE_PATH` defaulted to `rules/dev`, but `.gitignore` excludes `rules/dev/*` on purpose, so a fresh clone only has `.gitkeep` there and `load_rules()` aborts with `RulesError: prompts.yaml not found` before the app can start. Any deployment that did not set the variable explicitly failed at boot (or, worse, kept running an older image while looking healthy). The default is now `rules/example`, which is committed and complete; `rules/dev` stays local-only by design and production keeps reading `rules/prod` from `compose.prod.yaml`.
+- **`Rules.has_post_action()` was missing.** `hooks.handle_unassigned` calls it as the guard for its note-reading fallback, so every `conversation.unassigned` event whose actor was not the bot raised `AttributeError` inside the background task. The webhook still answered 202, so LibreDesk considered the delivery successful while hub-api silently dropped the event. In production this path is frequent: automation rules 4/6/7/8 and the autoassigner reassign conversations constantly.
 ## [0.2.0] - 2026-11-12
 ### Changed
 - **Release v0.2.0**: ## [0.2.0] - 2026-11-12

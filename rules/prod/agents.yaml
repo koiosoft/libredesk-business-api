@@ -9,17 +9,26 @@
 #   id=2 "Sofia Liendo L."        (LiveChat)
 #   id=3 "Sofia Liendo W."        (WhatsApp)
 #   id=4 "Asistente de IA de Koiosoft" (email)
-# Their team ids for revive-assistant MUST be confirmed in the production
-# workspace before enabling; until then leave revive_team_id commented so the
-# correction publishes but no reassignment happens.
+#
+# Confirmed against the production database on 2026-11-13 (SELECT on ai_assistants
+# joined with users): id/user_id pairs are 2/22, 3/23, 4/24, all enabled, and the
+# bot team is id=4 " AI Agents".
+# revive_team_id enabled 2026-11-13 (HUB-13): automation rule id=11 in production
+# "Revive AI Agent on team assignment" fires on conversation.team.assigned with
+# assigned_team==4 and assigns user 22. Verified end to end: PUT /assignee/team 4
+# moved a test conversation from user 24 to user 22.
+# Caveat observed: rule (iii) always revives the LiveChat bot (22) regardless of
+# channel, so an email or WhatsApp conversation gets the wrong assistant back.
+# Per-inbox rules (variant i) are the fix; data measured: 1=email->24, 2=wa->23,
+# 3 and 4=livechat->22.
 # =============================================================================
 
 agents:
   2:
     enabled: true
     name: "Sofia Liendo L."
-    # revive_team_id: <confirm in prod>
-    # bot_user_id: <users.id del bot en produccion>
+    bot_user_id: 22
+    revive_team_id: 4
     prefixes:
       chat: "Pensando un poco mejor lo comentado..."
       email: "Para ser mas precisos, o con otro punto de vista"
@@ -27,8 +36,8 @@ agents:
   3:
     enabled: true
     name: "Sofia Liendo W. (WhatsApp)"
-    # revive_team_id: <confirm in prod>
-    # bot_user_id: <users.id del bot en produccion>
+    bot_user_id: 23
+    revive_team_id: 4
     prefixes:
       chat: "Pensando un poco mejor lo comentado..."
       email: "Para ser mas precisos, o con otro punto de vista"
@@ -36,8 +45,8 @@ agents:
   4:
     enabled: true
     name: "Asistente de IA de Koiosoft"
-    # revive_team_id: <confirm in prod>
-    # bot_user_id: <users.id del bot en produccion>
+    bot_user_id: 24
+    revive_team_id: 4
     prefixes:
       chat: "Pensando un poco mejor lo comentado..."
       email: "Para ser mas precisos, o con otro punto de vista"
