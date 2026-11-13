@@ -9,17 +9,20 @@
 #   id=2 "Sofia Liendo L."        (LiveChat)
 #   id=3 "Sofia Liendo W."        (WhatsApp)
 #   id=4 "Asistente de IA de Koiosoft" (email)
-# Their team ids for revive-assistant MUST be confirmed in the production
-# workspace before enabling; until then leave revive_team_id commented so the
-# correction publishes but no reassignment happens.
+#
+# Confirmed against the production database on 2026-11-13 (SELECT on ai_assistants
+# joined with users): id/user_id pairs are 2/22, 3/23, 4/24, all enabled, and the
+# bot team is id=4 " AI Agents".
+# revive_team_id stays commented for this deploy: production has no automation rule
+# whose trigger matches a team-4 assignment (rules 6/7/8 fire on assigned_team==1),
+# so the revive post_action would silently do nothing. Correction still publishes.
 # =============================================================================
 
 agents:
   2:
     enabled: true
     name: "Sofia Liendo L."
-    # revive_team_id: <confirm in prod>
-    # bot_user_id: <users.id del bot en produccion>
+    bot_user_id: 22
     prefixes:
       chat: "Pensando un poco mejor lo comentado..."
       email: "Para ser mas precisos, o con otro punto de vista"
@@ -27,8 +30,7 @@ agents:
   3:
     enabled: true
     name: "Sofia Liendo W. (WhatsApp)"
-    # revive_team_id: <confirm in prod>
-    # bot_user_id: <users.id del bot en produccion>
+    bot_user_id: 23
     prefixes:
       chat: "Pensando un poco mejor lo comentado..."
       email: "Para ser mas precisos, o con otro punto de vista"
@@ -36,8 +38,7 @@ agents:
   4:
     enabled: true
     name: "Asistente de IA de Koiosoft"
-    # revive_team_id: <confirm in prod>
-    # bot_user_id: <users.id del bot en produccion>
+    bot_user_id: 24
     prefixes:
       chat: "Pensando un poco mejor lo comentado..."
       email: "Para ser mas precisos, o con otro punto de vista"
