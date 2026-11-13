@@ -292,7 +292,7 @@ def test_defaults_are_the_approved_thresholds(monkeypatch):
     Without clearing them, what would be verified are the fixture values and not the
     real defaults the container boots with when nobody defines them.
     """
-    for name in ("CLASSIFIER_MODEL", "CLASSIFIER_URL", "HUB_RULES_DIR"):
+    for name in ("CLASSIFIER_MODEL", "CLASSIFIER_URL", "PROMPT_AUGMENTER_RULE_PATH"):
         monkeypatch.delenv(name, raising=False)
     s = _settings(monkeypatch)
     assert s.jev_min_confidence == 0.5

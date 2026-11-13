@@ -79,7 +79,7 @@ def _rules_dir_for_app(monkeypatch, tmp_path_factory):
     once, in tests/test_rules.py::test_repo_rules_load.
     """
     d = write_rules(tmp_path_factory.mktemp("app-rules"))
-    monkeypatch.setenv("HUB_RULES_DIR", str(d))
+    monkeypatch.setenv("PROMPT_AUGMENTER_RULE_PATH", str(d))
 
 
 @pytest.fixture

@@ -107,9 +107,14 @@ class Settings(BaseSettings):
     jev_generation_timeout_s: int = Field(90, alias="JEV_GENERATION_TIMEOUT_S")
 
 
-    # --- Reglas --------------------------------------------------------------
-    # Directory holding the YAML files. Relative to the process CWD (/app in the container).
-    rules_dir: str = Field("rules", alias="HUB_RULES_DIR")
+    # --- Rules ---------------------------------------------------------------
+    # Directory holding prompts.yaml, agents.yaml and prompt-augmenter.md.
+    # Relative to the process CWD (/app in the container), where the Dockerfile
+    # copies the whole rules/ tree. Convention: rules/example is documentation
+    # only, rules/dev is this workstation's live set (gitignored), rules/prod is
+    # the reviewed production policy. Editing any rule file requires a restart;
+    # the loaded hash is exposed on GET /meta/config.
+    rules_dir: str = Field("rules/dev", alias="PROMPT_AUGMENTER_RULE_PATH")
 
     @field_validator("libredesk_api_key", "libredesk_api_secret")
     @classmethod

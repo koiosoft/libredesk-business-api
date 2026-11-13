@@ -22,7 +22,7 @@
 - **JEV enforcement loop (MVP)**: every public outgoing message authored by an AI agent is classified with JEV Choice (`typesafe/jev-1.14` via OpenRouter `/api/alpha/decisions`) and, when a correction applies, a rewritten reply is generated through LibreDesk's own completion provider and published as an additional message. Nothing is deleted, nothing is reassigned; the agent keeps the conversation.
 - `rules/prompts.yaml`, `rules/agents.yaml`, `rules/prompt-augmenter.md`: closed allowlist of actions (with mandatory `none`) and per-assistant/channel prefixes. Loaded once at startup and validated fail-closed — a malformed or incomplete YAML aborts boot. Active version/hash exposed on `GET /meta/config`; `/healthz` stays data-free.
 - `app/core/rules.py` (rule loading + hash), `app/core/state.py` (in-memory dedupe, channel cache, per-conversation correction counter), `app/jev/` (`intake`, `classifier`, `composer`, `libredesk`, `pipeline`, `deps`).
-- New settings: `CLASSIFIER_URL`, `CLASSIFIER_API_KEY`, `CLASSIFIER_MODEL`, `JEV_MIN_CONFIDENCE`, `JEV_MIN_PROBABILITY`, `JEV_MAX_CORRECTIONS`, `JEV_CONCURRENCY`, `JEV_COMPLETION_PROMPT_KEY`, `HUB_RULES_DIR`.
+- New settings: `CLASSIFIER_URL`, `CLASSIFIER_API_KEY`, `CLASSIFIER_MODEL`, `JEV_MIN_CONFIDENCE`, `JEV_MIN_PROBABILITY`, `JEV_MAX_CORRECTIONS`, `JEV_CONCURRENCY`, `JEV_COMPLETION_PROMPT_KEY`, `PROMPT_AUGMENTER_RULE_PATH`.
 - Handlers for `conversation.created` (sole source of `inbox_channel`, absent from `message.created`) and durable content-hash dedupe keys so repeated "Send test" clicks no longer collide.
 - Test suite grew from 19 to 110 cases: rule contract, intake guards, in-memory state, pipeline orchestration with doubles, and concurrency limits.
 
