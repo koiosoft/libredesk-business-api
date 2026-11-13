@@ -1,6 +1,6 @@
 ---
 name: libredesk-business-api-devops
-description: Operate and maintain the Customer Hub production stack (LibreDesk + hub-api) on host 192.168.1.107. Use for every task involving: reviewing the Kanboard board, taking a Ready card, backing up PostgreSQL, deploying hub-api or LibreDesk, changing rules under rules/prod, diagnosing the JEV enforcement loop, or creating automation rules and webhooks through the API. Follow the commands and gates literally; each gate blocks.
+description: Operate and maintain the Customer Hub production stack (LibreDesk + hub-api) on host 192.168.1.107. Use for every task involving => reviewing the Kanboard board, taking a Ready card, backing up PostgreSQL, deploying hub-api or LibreDesk, changing rules under rules/prod, diagnosing the JEV enforcement loop, or creating automation rules and webhooks through the API. Follow the commands and gates literally; each gate blocks.
 ---
 
 # Customer Hub — DevOps operations

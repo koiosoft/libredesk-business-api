@@ -1,5 +1,6 @@
 {
   "pi-roles": {
     "defaultRole": "role.passthrough"
-  }
+  },
+  "theme": "current-project"
 }

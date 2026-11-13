@@ -1,6 +1,6 @@
 ---
 name: libredesk-business-api-project
-description: Build and maintain libredesk-business-api (hub-api), the FastAPI service that enforces JEV-classified corrections on LibreDesk AI-agent messages. Use this skill whenever working in this repository: to locate code through the retrieval cascade, to run or extend the test suite, to change the rule sets under rules/, to release a version, or to operate against the live development stack. It records the project-specific constraints that CONVENTIONS.md and SPEC.md assume you already know, plus the MCP tools this project expects you to use.
+description: Build and maintain libredesk-business-api (hub-api), the FastAPI service that enforces JEV-classified corrections on LibreDesk AI-agent messages. Use this skill whenever working in this repository => to locate code through the retrieval cascade, to run or extend the test suite, to change the rule sets under rules/, to release a version, or to operate against the live development stack. It records the project-specific constraints that CONVENTIONS.md and SPEC.md assume you already know, plus the MCP tools this project expects you to use.
 ---
 
 # Current project — hub-api operations

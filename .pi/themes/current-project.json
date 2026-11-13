@@ -1,11 +1,10 @@
 {
     "$schema": "https://pi.dev/schemas/theme.schema.json",
-    "name": "kitty-slate",
+    "name": "current-project",
     "vars": {
         "primary": "#ffd27a",
         "secondary": "#2F4F4F",
         "text": "#fff2e0",
-        "background": "#778899",
         "success": "#a8d95e",
         "error": "#ff5a3c",
         "warning": "#ffb84d"
