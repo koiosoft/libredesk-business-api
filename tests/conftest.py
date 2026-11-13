@@ -38,6 +38,7 @@ options:
   handoff-too-early:
     text: Reescribe la respuesta abandonada y devuelve el lead al asistente.
     post_action: revive-assistant
+    snippets: [102, 101]
 """
 
 FIXTURE_AGENTS = f"""\

@@ -49,7 +49,8 @@ class FakeClassifier:
 
 class FakeLibreDesk:
     def __init__(self, *, assistant=None, messages=None, completion="<p>respuesta corregida</p>",
-                 publish_error: str | None = None) -> None:
+                 publish_error: str | None = None,
+                 snippets: list[dict] | None = None) -> None:
         self._assistant = assistant if assistant is not None else AssistantConfig(
             assistant_id=AID, name="Fixture Agent", instructions="Habla de tu.",
             guardrails="No prometas plazos.", enabled=True, max_turns=6, user_id=9011,
@@ -63,6 +64,11 @@ class FakeLibreDesk:
         ]
         self._completion = completion
         self._publish_error = publish_error
+        # Synthetic snippet rows only: real content lives in the database and
+        # changes without restarting hub-api, so tests never wire it (conftest
+        # rule: contract over shape, never over business content).
+        self._snippets = snippets if snippets is not None else []
+        self.snippet_reads = 0
         self.published: list[dict] = []
         self.team_calls: list[tuple[str, int]] = []
         self.assign_calls: list[tuple[str, int]] = []
@@ -71,10 +77,15 @@ class FakeLibreDesk:
 
     async def get_assistant(self, assistant_id):
         return self._assistant
+        return self._assistant
+
+    async def get_snippets(self):
+        from app.jev.libredesk import SnippetRow
+        self.snippet_reads += 1
+        return [SnippetRow(**row) for row in self._snippets]
 
     async def get_conversation_messages(self, conversation_uuid, page_size=10):
         return list(self._messages)
-
     async def copilot(self, *, conversation_uuid, message, assistant_id):
         self.copilot_calls.append({"conversation_uuid": conversation_uuid,
                                    "message": message, "assistant_id": assistant_id})
@@ -83,6 +94,11 @@ class FakeLibreDesk:
     async def complete(self, prompt_key, content):
         self.completion_calls.append((prompt_key, content))
         return self._completion
+
+    async def first_prompt_key(self):
+        # Mirrors the D8/G9 fallback: only reached when the settings key is empty.
+        self.prompt_fallback_reads = getattr(self, "prompt_fallback_reads", 0) + 1
+        return "fallback-prompt-key" if getattr(self, "_fallback_key", True) else None
 
     async def assign_team(self, conversation_uuid, team_id):
         self.team_calls.append((conversation_uuid, team_id))
@@ -96,11 +112,11 @@ class FakeLibreDesk:
 
 
 def make_pipeline(rules, *, decision=None, libredesk, classifier=None,
-                  settings=None, use_copilot=True) -> EnforcementPipeline:
+                  settings=None, use_copilot=False) -> EnforcementPipeline:
     s = settings or Settings()
-    if not use_copilot:
+    if use_copilot:
         # model_copy skips revalidation: it only swaps the engine under test.
-        s = s.model_copy(update={"jev_use_copilot": False})
+        s = s.model_copy(update={"jev_use_copilot": True})
     clf = classifier or FakeClassifier(decision)
     return EnforcementPipeline(
         rules=rules, settings=s, classifier=clf, libredesk=libredesk,
@@ -525,10 +541,9 @@ async def test_livechat_conversation_created_still_gets_prefixed_and_published(r
     assert expected_prefix_of(rules, "chat") in ld.published[0]["html_body"]
 
 
-async def test_copilot_engine_is_the_default_and_gets_correction_instruction(rules):
-    """JEV_USE_COPILOT=true (default): generation goes to /ai/copilot with context."""
+async def test_completion_engine_is_the_default_and_gets_full_context(rules):
+    """D3/G8: JEV_USE_COPILOT=false (default) -> /ai/completion with the composed prompt."""
     ld = FakeLibreDesk()
-    clf = SpyClassifier() if False else None  # noqa: F841
     seen_state = {}
 
     class StateSpy:
@@ -540,28 +555,29 @@ async def test_copilot_engine_is_the_default_and_gets_correction_instruction(rul
     pipe = make_pipeline(rules, libredesk=ld, classifier=StateSpy())
     out = await pipe.run(item(channel="chat"))
     assert out["outcome"] == "corrected"
-    assert len(ld.copilot_calls) == 1
-    assert not ld.completion_calls, "el motor legacy no debe invocarse"
-    call = ld.copilot_calls[0]
-    assert call["conversation_uuid"] == "conv-1"
-    assert "Correct the assistant's reply" in call["message"]
-    # The assistant policy now DOES reach JEV insidel state.
+    assert len(ld.completion_calls) == 1
+    assert not ld.copilot_calls, "the copilot engine must not run by default"
+    # The assistant policy reaches JEV inside state, unclipped.
     st = seen_state["state"]
     assert "POLITICA DEL ASISTENTE" in st
-    assert "Habla de tu." in st           # instructions del doble
+    assert "Habla de tu." in st           # double's instructions
     assert "No prometas plazos." in st    # guardrails
 
 
-async def test_legacy_completion_engine_when_flag_off(rules, monkeypatch):
-    monkeypatch.setenv("JEV_USE_COPILOT", "false")
+async def test_copilot_engine_when_flag_on(rules, monkeypatch):
+    """Escape hatch kept reachable: JEV_USE_COPILOT=true routes to /ai/copilot."""
+    monkeypatch.setenv("JEV_USE_COPILOT", "true")
     from app.core.config import get_settings
     get_settings.cache_clear()
     ld = FakeLibreDesk()
     pipe = make_pipeline(rules, decision=ACT, libredesk=ld,
-                         settings=get_settings(), use_copilot=False)
+                         settings=get_settings(), use_copilot=True)
     out = await pipe.run(item(channel="chat"))
     assert out["outcome"] == "corrected"
-    assert ld.completion_calls and not ld.copilot_calls
+    assert ld.copilot_calls and not ld.completion_calls
+    call = ld.copilot_calls[0]
+    assert call["conversation_uuid"] == "conv-1"
+    assert "Correct the assistant's reply" in call["message"]
     get_settings.cache_clear()
 
 
@@ -714,3 +730,152 @@ async def test_dangerous_html_is_stripped_before_publishing(rules):
     await pipe.run(item())
     body = ld.published[0]["html_body"]
     assert "<script" not in body and "alert(1)" in body
+
+
+# --- Snippets through the pipeline (T3.4/T4.3, synthetic rows only) ------------
+
+SNIP_A = {"id": 101, "title": "Snippet Alfa", "content": "contenido alfa de prueba",
+          "enabled": True, "updated_at": "2026-11-09T00:00:00Z"}
+SNIP_B = {"id": 102, "title": "Snippet Beta", "content": "contenido beta de prueba",
+          "enabled": True, "updated_at": "2026-11-10T00:00:00Z"}
+SNIP_OFF = {"id": 103, "title": "Snippet Gamma", "content": "gamma deshabilitado",
+            "enabled": False, "updated_at": "2026-11-08T00:00:00Z"}
+
+
+async def test_declared_snippets_reach_jev_state_and_the_corrector(rules):
+    """The fixture option declares [102, 101]: declared order must survive to
+    both prompts, and the disabled snippet must never appear (G4 filtering)."""
+    ld = FakeLibreDesk(snippets=[SNIP_A, SNIP_B, SNIP_OFF])
+    seen = {}
+
+    class Spy:
+        async def classify(self, state, instructions, criteria, **kw):
+            seen["state"] = state
+            return Decision(True, "accepted", choice="handoff-too-early",
+                            confidence=0.9, probability=0.9)
+
+    pipe = make_pipeline(rules, libredesk=ld, classifier=Spy())
+    out = await pipe.run(item(channel="chat", handed_off=True))
+    assert out["outcome"] == "corrected"
+
+    block = "SNIPPETS OBLIGATORIOS DE CUMPLIMIENTO"
+    assert block in seen["state"], "declared snippets must reach the judge"
+    pos_a, pos_b = (seen["state"].find("Snippet Alfa"), seen["state"].find("Snippet Beta"))
+    assert 0 < pos_b < pos_a, "declared order [102, 101] preserved, not server order"
+    assert "Gamma" not in seen["state"], "disabled snippets are filtered (G4)"
+
+    _, prompt = ld.completion_calls[0]
+    assert "Snippets obligatorios de cumplimiento" in prompt
+    assert "contenido beta de prueba" in prompt and "contenido alfa de prueba" in prompt
+    assert "Gamma" not in prompt
+
+
+async def test_options_without_snippets_change_nothing(rules):
+    """FIXTURE_CHOICE declares no snippets: neither prompt grows a block."""
+    ld = FakeLibreDesk(snippets=[SNIP_A])
+    pipe = make_pipeline(rules, decision=ACT, libredesk=ld)
+    out = await pipe.run(item(channel="chat"))
+    assert out["outcome"] == "corrected"
+    _, prompt = ld.completion_calls[0]
+    assert "Snippets obligatorios" not in prompt
+    # The judge sees the union over all options; this choice's own set is empty.
+    assert ld.snippet_reads >= 1
+
+
+async def test_snippet_source_failure_never_blocks_the_correction(rules):
+    """G4 end-to-end: a raising source logs and the pipeline behaves as if no
+    snippets existed -- classification and publication continue regardless."""
+    ld = FakeLibreDesk()
+
+    async def explode():
+        raise RuntimeError("libredesk down")
+    ld.get_snippets = explode
+
+    pipe = make_pipeline(rules, decision=revive_decision(), libredesk=ld)
+    out = await pipe.run(item(channel="chat", handed_off=True))
+    assert out["outcome"] == "corrected", out.get("reason")
+    _, prompt = ld.completion_calls[0]
+    assert "Snippets obligatorios" not in prompt
+
+
+def revive_decision():
+    return Decision(True, "accepted", choice="handoff-too-early",
+                    confidence=0.9, probability=0.9)
+
+
+# --- D8/G9: completion prompt key resolution ------------------------------------
+
+async def test_configured_prompt_key_never_triggers_the_fallback(rules, monkeypatch):
+    monkeypatch.setenv("JEV_COMPLETION_PROMPT_KEY", "mi_prompt_jev")
+    from app.core.config import get_settings
+    get_settings.cache_clear()
+    ld = FakeLibreDesk()
+    pipe = make_pipeline(rules, decision=ACT, libredesk=ld, settings=get_settings())
+    out = await pipe.run(item(channel="chat"))
+    assert out["outcome"] == "corrected"
+    assert ld.completion_calls[0][0] == "mi_prompt_jev"
+    assert not hasattr(ld, "prompt_fallback_reads"), "fallback must not be consulted"
+    get_settings.cache_clear()
+
+
+async def test_empty_prompt_key_falls_back_to_first_ai_prompt(rules, monkeypatch):
+    """Default is empty now (D8): generation uses the first ai_prompts row and
+    still succeeds -- the omission lands in logs, it never blocks a correction."""
+    monkeypatch.delenv("JEV_COMPLETION_PROMPT_KEY", raising=False)
+    from app.core.config import get_settings
+    get_settings.cache_clear()
+    s = get_settings()
+    assert s.jev_completion_prompt_key == "", "empty default is the contract"
+    ld = FakeLibreDesk()
+    pipe = make_pipeline(rules, decision=ACT, libredesk=ld, settings=s)
+    out = await pipe.run(item(channel="chat"))
+    assert out["outcome"] == "corrected"
+    assert ld.prompt_fallback_reads == 1
+    assert ld.completion_calls[0][0] == "fallback-prompt-key"
+    get_settings.cache_clear()
+
+
+async def test_fallback_without_any_prompt_row_fails_closed(rules, monkeypatch):
+    """No configured key AND no rows to borrow from: nothing generates, nothing
+    publishes. Fail-closed like every other stage."""
+    monkeypatch.delenv("JEV_COMPLETION_PROMPT_KEY", raising=False)
+    from app.core.config import get_settings
+    get_settings.cache_clear()
+    ld = FakeLibreDesk()
+    ld._fallback_key = False
+    pipe = make_pipeline(rules, decision=ACT, libredesk=ld, settings=get_settings())
+    out = await pipe.run(item(channel="chat"))
+    assert out["outcome"] == "failed" and out["reason"] == "generation_empty"
+    assert ld.published == [] and ld.completion_calls == []
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_first_prompt_key_contract_on_http_shapes():
+    """Real client against captured shapes: flat list under data, taken as-is."""
+    import httpx
+
+    from app.jev.libredesk import LibreDeskClient
+
+    routes = {
+        "ok": (200, {"status": "success", "data": [
+            {"id": 3, "key": "make_concise", "title": "Make concise"},
+            {"id": 1, "key": "add_empathy", "title": "Add empathy"}]}),
+        "empty": (200, {"status": "success", "data": []}),
+        "error": (500, {"status": "error", "message": "boom"}),
+    }
+
+    async def run(name):
+        code, body = routes[name]
+        def handler(request):
+            assert request.url.path == "/api/v1/ai/prompts"
+            return httpx.Response(code, json=body)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as h:
+            ld = LibreDeskClient(h, base_url="http://ld.test",
+                                 api_key="k" * 32, api_secret="s" * 64)
+            return await ld.first_prompt_key()
+
+    # First row as it arrives (ORDER BY title server-side); no reordering here.
+    assert await run("ok") == "make_concise"
+    assert await run("empty") is None
+    assert await run("error") is None

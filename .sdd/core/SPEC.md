@@ -143,6 +143,11 @@ This project exposes no CLI; its operational surface is HTTP plus release script
   the service is single-process by construction; "why wasn't this corrected?" is answered
   from structured logs, not SQL. If it ever scales horizontally, that state moves to Redis
   or a table with a UNIQUE constraint.
+- **Reading LibreDesk tables over the existing PostgreSQL connection is forbidden**
+  (`app/core/db.py` can reach `ai_knowledge_base`, `ai_prompts`, etc., and it works —
+  which is exactly why this has to be stated, not assumed). All LibreDesk reads go
+  through its official API: direct SQL breaks on every upstream migration and bypasses
+  the permission model. The connection remains only for queries owned by this service.
 - Configuration: every knob is an environment variable validated at import in
   `app/core/config.py` (see `.env.example`). Defaults are safe: rules resolve to a committed
   directory, logging flags off, copilot engine on, thresholds conservative.
@@ -284,9 +289,13 @@ Open by decision, not oversight:
   development traffic. Recalibrate only against a sample of real cases.
 - No correction has yet been observed on a genuine lead message; the published case came
   from a synthetic test conversation. The code path is identical.
+- Generation default flipped to /ai/completion (D3): no live correction has been observed
+  yet through the re-composed prompt (history + guardrails + snippets, ACCION last).
 - Channel delivery is unconfirmed: publication returns `status=pending` and rejection
   arrives later through `message.updated`, which is logged but not reconciled.
-- Knowledge-base snippets reach the generator (through its tools) but not the classifier:
-  LibreDesk exposes no public read API for them.
+- Knowledge-base snippets reach the classifier and the corrector through explicit
+  per-option `snippets:` ids resolved via `GET /api/v1/ai/snippets` (admin permission,
+  cached). Semantic retrieval against them stays out of scope: LibreDesk exposes no
+  filtered-search HTTP surface for it.
 - In-memory state forces a single worker. Horizontal scaling requires moving dedupe,
   channel cache, correction counters and handoff flags to Redis or a UNIQUE-backed table.

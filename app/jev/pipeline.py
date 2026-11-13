@@ -24,6 +24,7 @@ from app.jev import composer
 from app.jev.classifier import Classifier
 from app.jev.intake import normalize_channel
 from app.jev.libredesk import LibreDeskClient
+from app.jev.snippets import TableSnippetSource, format_snippets
 
 log = logging.getLogger("hub-api.jev.pipeline")
 
@@ -79,7 +80,10 @@ class EnforcementPipeline:
         self._settings = settings
         self._classifier = classifier
         self._libredesk = libredesk
-
+        # Snippet backend behind the D4 interface. Constructed here, injected
+        # nowhere else: swapping the table for a semantic source later touches
+        # one line (its own docstring records why that source is unreachable).
+        self._snippets = TableSnippetSource(libredesk.get_snippets)
     async def run(self, item: dict[str, Any]) -> dict[str, Any]:
         """Runs the full cycle for a message already accepted by intake.py.
 
@@ -117,15 +121,23 @@ class EnforcementPipeline:
                   if _is_contact(m) and not m.get("private")), {})
         )
         # The assistant policy is the criterion JEV needs to decide what to
-        # improve against; it is read from the live assistant (cached) and clipped.
+        # improve against; it is read from the live assistant (cached) and sent
+        # whole (D1/G2: no character limit on policy fields).
         guard = getattr(cfg, "guardrails", "") or ""
         policy = composer.build_policy_header(
             getattr(cfg, "instructions", "") or "", guard,
         )
+        # The judge resolves the same compliance material the policy points at
+        # (T3.4). Before a decision exists there is no single chosen option, so
+        # every id declared by any option travels: the set is small by design
+        # (snippets are few and hand-curated) and a stable block keeps the §9
+        # layout identical across events. Failures never block a classification
+        # (G4): an empty result simply omits the block.
         state = composer.build_state_for_jev(
             customer_message=customer, agent_message=agent_text,
             history=history[:-1], policy=policy,
             turn_structure=_extract_turn_structure(guard),
+            snippets=await self._snippet_block(self._rules.all_snippet_ids()),
         )
 
         # Offer handoff-too-early only when a handoff was actually observed. Always
@@ -149,6 +161,10 @@ class EnforcementPipeline:
             # Chosen action missing from the YAML: total fail-closed.
             return {**base, "outcome": "ignored", "reason": f"action_missing:{decision.choice}"}
 
+        # Only the CHOSEN option's snippets reach the corrector (D2): the rules
+        # bind actions to compliance material, retrieval decides nothing.
+        chosen_snippets = await self._snippet_block(
+            self._rules.snippet_ids(decision.choice))
         # --- Per-conversation cap BEFORE spending generation. ---
         if not STATE.take_correction_slot(
             conv, self._settings.jev_max_corrections
@@ -156,9 +172,11 @@ class EnforcementPipeline:
             return {**base, "outcome": "skipped", "reason": "correction_limit_reached",
                     "choice": decision.choice}
 
-        # Contextual generation: /ai/copilot rebuilds history, persona and the
-        # knowledge base on the LibreDesk side. compose_prompt()/
-        # complete() remain reachable explicitly through JEV_USE_COPILOT=false.
+        # Generation engine (D3/G8): /ai/completion with the full composed
+        # prompt is the active path -- the corrector must see exactly what the
+        # generator saw, plus JEV's action last (§9). /ai/copilot remains
+        # reachable explicitly through JEV_USE_COPILOT=true, but its persona
+        # omits guardrails server-side (V15), so it is no longer the default.
         if self._settings.jev_use_copilot:
             instruction = composer.build_correction_instruction(
                 action_text=action_text, assistant_name=cfg.name,
@@ -176,10 +194,16 @@ class EnforcementPipeline:
                 guardrails=cfg.guardrails,
                 customer_message=customer,
                 agent_message=agent_text,
+                history=history[:-1],
+                snippets=chosen_snippets,
             )
-            generated = await self._libredesk.complete(
-                self._settings.jev_completion_prompt_key, prompt
-            )
+            prompt_key = self._settings.jev_completion_prompt_key
+            if not prompt_key:
+                # D8/G9: the variable is required in production; without it the
+                # first ai_prompts row is used and the omission lands in logs.
+                prompt_key = await self._libredesk.first_prompt_key()
+            generated = (await self._libredesk.complete(prompt_key, prompt)
+                         if prompt_key else None)
         if not generated:
             return {**base, "outcome": "failed", "reason": "generation_empty",
                     "choice": decision.choice}
@@ -249,6 +273,23 @@ class EnforcementPipeline:
                 "confidence": decision.confidence, "cost_usd": decision.cost_usd,
                 "published_status": result.status, "reason": result.reason,
                 "new_message_uuid": result.message_uuid, **summary_extra}
+
+
+    async def _snippet_block(self, ids) -> str:  # noqa: ANN001 - Sequence[int]
+        """Resolve ids to the formatted block both prompts share (G7).
+
+        Never raises: snippet availability enriches context, it does not gate
+        enforcement (G4). A source failure logs and yields "" -- the pipeline
+        then composes exactly the pre-feature state minus nothing else.
+        """
+        if not ids:
+            return ""
+        try:
+            found = await self._snippets.resolve(ids)
+        except Exception as exc:  # noqa: BLE001 - fail-open by contract G4
+            log.warning("snippet resolution failed (%s); continuing without them", exc)
+            return ""
+        return format_snippets(found)
 
 
 def _extract_turn_structure(guardrails: str) -> str:

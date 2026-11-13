@@ -71,6 +71,14 @@ async def lifespan(app: FastAPI):
                 "allowlist still applies. Consider pinning HUB_API_BIND to the specific "
                 "LAN address."
             )
+        if not s.jev_completion_prompt_key:
+            log.warning(
+                "JEV_COMPLETION_PROMPT_KEY not set: corrections generate with the "
+                "first prompt row LibreDesk returns (visible in every generation "
+                "log). Required in production -- create the dedicated prompt in "
+                "Admin -> AI and pin its key here (FEATURE.md D8)."
+            )
+
 
         yield
 

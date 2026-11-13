@@ -59,6 +59,17 @@ class AssistantConfig:
         return self.enabled
 
 
+@dataclass(frozen=True)
+class SnippetRow:
+    """Raw row of GET /api/v1/ai/snippets (shape verified against the live API)."""
+
+    id: int
+    title: str
+    content: str
+    enabled: bool
+    updated_at: str
+
+
 @dataclass
 class PublishResult:
     ok: bool
@@ -79,6 +90,9 @@ class LibreDeskClient:
         self._timeout = timeout_s
         self._log_request = log_request
         self._cache: dict[int, AssistantConfig] = {}
+        # Snippets change in the database without restarting hub-api; the whole
+        # listing is re-fetched only when max(updated_at) moves (FEATURE.md T3.2).
+        self._snippets_cache: tuple[str, list[SnippetRow]] | None = None
 
     def _headers(self) -> dict[str, str]:
         # Format verified in internal/user/user.go -> ValidateAPIKey and in the
@@ -106,7 +120,7 @@ class LibreDeskClient:
             return resp.status_code, {"raw": resp.text[:200]}
         return resp.status_code, data
 
-    # --- Lectura ------------------------------------------------------------
+    # --- Reading (official API only; direct SQL on LibreDesk tables is forbidden, SPEC.md §3) ---
 
     async def get_assistant(self, assistant_id: int) -> AssistantConfig | None:
         """GET /api/v1/ai/assistants/{id}. Cached by id (D8: invalidated on restart).
@@ -197,7 +211,55 @@ class LibreDeskClient:
         row = data.get("data")
         return row if isinstance(row, dict) else None
 
-    # --- Generacion ---------------------------------------------------------
+    async def get_snippets(self) -> list[SnippetRow]:
+        """GET /api/v1/ai/snippets: every knowledge-base snippet, cached.
+
+        Verified against the live API: the payload is a FLAT list under `data`
+        (no pagination wrapper, unlike the messages endpoint -- the shape lesson
+        from FOLLOW_UP applies, so it was checked before being coded). Protected
+        by ai:manage, the same permission this client already uses for
+        assistants. Any failure returns the previous cache when it exists and an
+        empty list otherwise: snippets enrich a decision, they never block one
+        (G4).
+        """
+        # The listing comes ordered by updated_at DESC (verified in queries.sql),
+        # so the first row's timestamp is max(updated_at). When it matches the
+        # cache, the fresh body is not parsed at all and the cached rows are
+        # served. The HTTP read itself happens on every call: one small request
+        # per event buys immediate visibility of edits AND deletions, which a
+        # pure TTL cache would hide -- correctness over cleverness (T3.2).
+        cached = self._snippets_cache
+
+        code, data = await self._request("GET", "/api/v1/ai/snippets")
+        if code != 200 or not isinstance(data, dict) or not isinstance(data.get("data"), list):
+            stale = cached[1] if cached else []
+            log.warning("snippets unreadable (HTTP %s); serving %s cached rows",
+                        code, len(stale))
+            return stale
+
+        rows: list[SnippetRow] = []
+        for raw in data["data"]:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                rows.append(SnippetRow(
+                    id=int(raw["id"]),
+                    title=str(raw.get("title") or ""),
+                    content=str(raw.get("content") or ""),
+                    enabled=bool(raw.get("enabled")),
+                    updated_at=str(raw.get("updated_at") or ""),
+                ))
+            except (KeyError, TypeError, ValueError):
+                log.warning("skipping malformed snippet row: %r", str(raw)[:120])
+
+        stamp = max((r.updated_at for r in rows), default="")
+        cached = self._snippets_cache
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        self._snippets_cache = (stamp, rows)
+        return rows
+
+    # --- Generation ---------------------------------------------------------
 
     async def complete(self, prompt_key: str, content: str) -> str | None:
         """POST /api/v1/ai/completion. Returns the text or None when something failed.
@@ -228,6 +290,31 @@ class LibreDeskClient:
             log.warning("completion returned no usable text: %s", str(text)[:120])
             return None
         return text
+
+    async def first_prompt_key(self) -> str | None:
+        """First entry of GET /api/v1/ai/prompts, taken exactly as it arrives.
+
+        D8/G9 fallback when JEV_COMPLETION_PROMPT_KEY was never configured: no
+        reordering, no filtering by title -- the point is to work while making
+        the omission loud in the log, not to guess a "better" prompt than the
+        operator. The list endpoint omits `content` (verified in queries.sql);
+        only its `key` is used here, which is all /ai/completion needs.
+        """
+        code, data = await self._request("GET", "/api/v1/ai/prompts")
+        if code != 200 or not isinstance(data, dict) or not isinstance(data.get("data"), list):
+            log.warning("prompt fallback failed: GET /api/v1/ai/prompts HTTP %s", code)
+            return None
+        for row in data["data"]:
+            if isinstance(row, dict) and isinstance(row.get("key"), str) and row["key"]:
+                key = row["key"]
+                log.warning(
+                    "JEV_COMPLETION_PROMPT_KEY is empty: falling back to prompt "
+                    "%r (first row of ai_prompts). Set the variable to pin this.",
+                    key,
+                )
+                return key
+        log.warning("prompt fallback found no usable entry in /api/v1/ai/prompts")
+        return None
 
     async def copilot(self, *, conversation_uuid: str, message: str,
                       assistant_id: int) -> str | None:
@@ -292,7 +379,7 @@ class LibreDeskClient:
                         team_id, conversation_uuid, code)
         return ok
 
-    # --- Publicacion --------------------------------------------------------
+    # --- Publishing ---------------------------------------------------------
 
     async def simulate_handoff(self, conversation_uuid: str) -> bool:
         """TEST ONLY: reproduce an assistant handoff through the public API.

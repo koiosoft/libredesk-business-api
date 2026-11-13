@@ -1,0 +1,38 @@
+{
+  "status": "success",
+  "data": [
+    {
+      "id": 102,
+      "created_at": "2026-11-01T10:00:00.000000Z",
+      "updated_at": "2026-11-10T12:34:56.789012Z",
+      "type": "snippet",
+      "title": "Snippet Beta",
+      "content": "Beta filler content for contract tests only.",
+      "enabled": true,
+      "source": "manual",
+      "source_url": ""
+    },
+    {
+      "id": 101,
+      "created_at": "2026-11-01T09:00:00.000000Z",
+      "updated_at": "2026-11-09T08:00:00.000000Z",
+      "type": "snippet",
+      "title": "Snippet Alpha",
+      "content": "Alpha filler content for contract tests only.",
+      "enabled": true,
+      "source": "manual",
+      "source_url": "https://example.invalid/source"
+    },
+    {
+      "id": 103,
+      "created_at": "2026-11-02T09:00:00.000000Z",
+      "updated_at": "2026-11-08T08:00:00.000000Z",
+      "type": "snippet",
+      "title": "Snippet Gamma Disabled",
+      "content": "Gamma must never resolve: enabled is false.",
+      "enabled": false,
+      "source": "manual",
+      "source_url": ""
+    }
+  ]
+}

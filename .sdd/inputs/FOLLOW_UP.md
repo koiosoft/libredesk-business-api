@@ -27,11 +27,16 @@ Kanboard: HUB-12 (deploy) y HUB-13 (rule de revive) cerradas. Ready y WIP vacío
    en producción salió de una conversación de prueba del propio agente. El camino técnico es
    idéntico, pero la validación de negocio falta. Llega sola con uso normal.
 
-3. **Cobertura de snippets hacia el clasificador.** JEV no ve la base de conocimiento porque
-   LibreDesk no expone API pública para leerla. El generador sí llega, por tools internas.
-   Hoy el state incluye la cláusula de estructura de turno + política del asistente, que es lo
-   que hace decidible una desviación. Si algún día se quiere más, hace falta una lectura
-   directa de la BD (prohibida por diseño) o una herramienta nueva en LibreDesk.
+3. **Cobertura de snippets hacia el clasificador.** RESUELTO en parte, y corregido el
+   diagnóstico original: la afirmación "LibreDesk no expone API pública para leerlos" era
+   falsa. `GET /api/v1/ai/snippets` existe (permiso `ai:manage`, el mismo que ya usa
+   `get_assistant`) y devuelve todos los snippets con `id`, `title`, `content` y `enabled`.
+   El bloqueo real nunca fue la API: era haber leído solo las rutas públicas del help
+   center y generalizar desde ahí. Lo que sigue sin existir es un retrieval semántico
+   filtrado por HTTP (`Manager.Search()` no tiene ruta; el índice es fuerza bruta en
+   memoria y la llave del proveedor de embeddings viaja cifrada), así que la cobertura se
+   resuelve declarando ids de snippet por opción en `rules/*/prompts.yaml`. Leer
+   `ai_knowledge_base` por SQL directo sigue prohibido por diseño aunque la conexión exista.
 
 4. **Entrega asíncrona sin confirmación.** Publicar devuelve `status=pending`; un rechazo del
    canal (ventana de 24 h cerrada en WhatsApp, por ejemplo) llega después por `message.updated`

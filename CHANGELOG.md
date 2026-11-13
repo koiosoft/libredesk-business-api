@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+### Added
+- Snippet coverage for the JEV decision and the correction: per-option `snippets:` ids in `rules/*/prompts.yaml`, resolved through `GET /api/v1/ai/snippets` (cached by `max(updated_at)`), injected as a dedicated block into both prompts.
+
+### Changed
+- Assistant policy (`instructions` + `guardrails`) reaches the classifier unclipped: the 2400-character limit dropped normative clauses and its only justification (cost) measured to fractions of a cent.
+- Corrected false documentation claims: LibreDesk DOES expose an authenticated snippets read API; direct SQL reads of `ai_knowledge_base` are now explicitly forbidden in SPEC.md §3.
+
 ## [0.3.1] - 2026-11-13
 ### Changed
 - **Release v0.3.1**: chore: update PI agent configuration and documentation infrastructure## [Unreleased]

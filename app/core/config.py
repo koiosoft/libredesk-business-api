@@ -67,8 +67,8 @@ class Settings(BaseSettings):
     # is answerable without reading code. Off by default: `state` contains customer
     # messages, which are personal data and must not land in logs unintentionally.
     classifier_log_request: bool = Field(False, alias="CLASSIFIER_LOG_REQUEST")
-    # Sin CLASSIFIER_TEMPERATURE / _REASONING_EFFORT / _MAX_TOKENS a proposito:
-    # GET /models/typesafe/jev-1.14/endpoints devuelve supported_parameters: [].
+    # Deliberately no CLASSIFIER_TEMPERATURE / _REASONING_EFFORT / _MAX_TOKENS:
+    # GET /models/typesafe/jev-1.14/endpoints returns supported_parameters: [].
     # Sending them does not error, but OpenRouter silently ignores them.
 
     # --- Business controls of the enforcement loop ----------------------------
@@ -76,8 +76,8 @@ class Settings(BaseSettings):
     # the probability of the chosen option (verified with real data: choice
     # close-forward-human at 0.37 probability returned confidence 0.16).
     # A single confidence threshold (the original suggestion was 0.7) would leave
-    # the feature as an obvious-case detector: it discards the ambiguous ones, which
-    # aporta valor. Se exigen ambos ejes.
+    # the feature as an obvious-case detector: it discards the ambiguous ones,
+    # which is where the value lives. Both axes are required.
     jev_min_confidence: float = Field(0.5, alias="JEV_MIN_CONFIDENCE")
     jev_min_probability: float = Field(0.45, alias="JEV_MIN_PROBABILITY")
     jev_max_corrections: int = Field(3, alias="JEV_MAX_CORRECTIONS")
@@ -88,17 +88,23 @@ class Settings(BaseSettings):
     # with notFoundTemplate otherwise). Verified: a fresh install ships only the 6
     # factory prompts (make_friendly, make_concise, ...), none suited for
     # correcting, so a custom one must be created in Admin -> AI -> Prompt editor.
-    jev_completion_prompt_key: str = Field("make_professional",
-                                           alias="JEV_COMPLETION_PROMPT_KEY")
+    # Optional at import on purpose (a deployment mid-setup must still boot and
+    # serve /healthz): when empty, startup logs a warning (main.py) and each
+    # generation falls back to the first prompt returned by GET /api/v1/ai/prompts
+    # -- taken as it arrives, no reordering -- logging which key was picked so the
+    # omission is visible instead of silent (FEATURE.md D8/G9).
+    jev_completion_prompt_key: str = Field("", alias="JEV_COMPLETION_PROMPT_KEY")
     # Log the exact JSON body sent to LibreDesk's completion endpoint (the prompt
     # that reaches Nemotron) before each generation. Off by default: it contains
     # the customer conversation. Same rationale as CLASSIFIER_LOG_REQUEST.
     completion_log_request: bool = Field(False, alias="COMPLETION_LOG_REQUEST")
-    # Engine that produces the correction. True (default): /api/v1/ai/copilot,
-    # which gives the model the full history, the real assistant persona and its
-    # tools (search_articles covers the snippets). False: /api/v1/ai/completion
-    # with a flat prompt composed here (pre-2026-11-12 behavior).
-    jev_use_copilot: bool = Field(True, alias="JEV_USE_COPILOT")
+    # Engine that produces the correction (FEATURE.md D3/G8). False (default):
+    # /api/v1/ai/completion with the whole context composed here -- guardrails,
+    # snippets and history included, ACCION last. True: /api/v1/ai/copilot, whose
+    # server-side persona omits guardrails (verified in aiagent/prompt.go) and
+    # which carries persistent chat history between events; kept only as an
+    # explicit escape hatch.
+    jev_use_copilot: bool = Field(False, alias="JEV_USE_COPILOT")
     # Wall-clock budget for the generation call. Measured: the contextual engine
     # (copilot) needs 15-34 s because LibreDesk rebuilds history, persona and KB
     # search before calling the model; the flat completion path answers in ~2 s.

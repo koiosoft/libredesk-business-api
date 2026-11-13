@@ -11,14 +11,19 @@ describe la estructura.
 
 ## Composición
 
-El prompt final se arma en `app/jev/composer.py` con tres bloques, en este orden:
+El prompt final se arma en `app/jev/composer.py` (motor `/ai/completion`, default
+desde D3), en este orden contractual (FEATURE.md §9 / G6):
 
 ```
 1. ROL            → las reglas de este archivo (qué es la corrección y cómo hablar)
-2. ACCIÓN         → el bloque elegido por JEV en rules/prompts.yaml (`options.<key>`)
-3. PERSONA        → `instructions` + `guardrails` reales del asistente, obtenidos de
-                    GET /api/v1/ai/assistants/{id}  (cacheado por agent_id)
+2. PERSONA        → `instructions` + `guardrails` reales del asistente, obtenidos de
+                    GET /api/v1/ai/assistants/{id}  (cacheado por agent_id),
+                    más los snippets declarados por la opción elegida
+                    (`options.<key>.snippets`, resueltos por GET /api/v1/ai/snippets)
+3. HISTORIAL      → conversación cronológica (no llega al corrector ciego)
 4. MATERIAL       → mensaje del cliente + respuesta del agente a corregir
+5. ACCIÓN         → el bloque elegido por JEV en rules/prompts.yaml (`options.<key`);
+                    SIEMPRE al final: la precedencia se expresa por posición
 ```
 
 `none` nunca llega aquí: si JEV responde `none`, o si la clave no existe en el YAML,

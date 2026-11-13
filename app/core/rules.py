@@ -77,6 +77,34 @@ class Rules:
     # Side effects declared per option (YAML post_action); empty for most sets.
     # Defaulted last because dataclass requires defaults at the end.
     post_actions: dict[str, str] = field(default_factory=dict)
+    # Snippet ids declared per option (YAML `snippets:`); empty for most sets.
+    option_snippets: dict[str, tuple[int, ...]] = field(default_factory=dict)
+
+    def snippet_ids(self, choice: str | None) -> tuple[int, ...]:
+        """Knowledge-base snippet ids an option requires the models to honor.
+
+        Format was validated at load; existence deliberately was not (G5): the
+        database changes without restarting this service, and a hard check would
+        abort boot because someone deleted a snippet.
+        """
+        if not choice or choice == NONE_OPTION:
+            return ()
+        return self.option_snippets.get(choice, ())
+
+    def all_snippet_ids(self) -> tuple[int, ...]:
+        """Union of every id declared by any option, in first-declared order.
+
+        Used for the classifier state, which is built BEFORE a choice exists:
+        the judge must be able to verify the reply against all compliance
+        material the policy references, and the set is small by design (snippets
+        are few and hand-curated). Deduplicated so one snippet referenced by
+        several options appears once.
+        """
+        seen: dict[int, None] = {}
+        for ids in self.option_snippets.values():
+            for sid in ids:
+                seen.setdefault(sid, None)
+        return tuple(seen)
 
     def agent(self, assistant_id: int) -> AgentRule | None:
         return self.agents.get(assistant_id)
@@ -140,13 +168,14 @@ def _load_prompts(path: Path) -> tuple[str, dict[str, str], dict[str, str]]:
 
     clean: dict[str, str] = {}
     post_actions: dict[str, str] = {}
+    option_snippets: dict[str, tuple[int, ...]] = {}
     known_post_actions = {"revive-assistant"}
     for key, desc in options.items():
         if not isinstance(key, str) or not key.strip():
             raise RulesError(f"{path.name}: option keys must be non-empty strings")
-        # Dos formas admitidas:
-        #   key: "plain text"                       (the common case)
-        #   key: {text: "...", post_action: "..."}  (when it also acts on state)
+        # Two accepted shapes per option (a third optional field applies to both):
+        #   key: "plain text"                                (the common case)
+        #   key: {text: "...", post_action: "...", snippets: [...]}
         if isinstance(desc, dict):
             raw_text = desc.get("text")
             pa = desc.get("post_action")
@@ -158,6 +187,33 @@ def _load_prompts(path: Path) -> tuple[str, dict[str, str], dict[str, str]]:
                         f"{pa!r} (valid: {sorted(known_post_actions)})"
                     )
                 post_actions[key.strip()] = pa
+            snips = desc.get("snippets")
+            if snips is not None:
+                if not isinstance(snips, list):
+                    raise RulesError(
+                        f"{path.name}: option {key!r} 'snippets' must be a list of ids"
+                    )
+                parsed: list[int] = []
+                for raw_id in snips:
+                    try:
+                        sid = int(raw_id)
+                    except (TypeError, ValueError):
+                        raise RulesError(
+                            f"{path.name}: option {key!r} snippet id {raw_id!r} "
+                            "is not an integer"
+                        ) from None
+                    if sid <= 0:
+                        raise RulesError(
+                            f"{path.name}: option {key!r} snippet id must be positive, got {sid}"
+                        )
+                    parsed.append(sid)
+                if len(set(parsed)) != len(parsed):
+                    raise RulesError(
+                        f"{path.name}: option {key!r} declares duplicate snippet ids"
+                    )
+                # Format only. Existence is never checked here (G5): the snippet
+                # table changes without restarting this service.
+                option_snippets[key.strip()] = tuple(parsed)
         else:
             raw_text = desc
         if not isinstance(raw_text, str) or not raw_text.strip():
@@ -170,7 +226,7 @@ def _load_prompts(path: Path) -> tuple[str, dict[str, str], dict[str, str]]:
         raise RulesError(
             f"{path.name}: option {NONE_OPTION!r} is mandatory (fail-closed default)"
         )
-    return instructions.strip(), clean, post_actions
+    return instructions.strip(), clean, post_actions, option_snippets
 
 
 def _load_agents(path: Path) -> dict[int, AgentRule]:
@@ -247,7 +303,7 @@ def load_rules(rules_dir: Path | str = "rules") -> Rules:
     agents_path = base / "agents.yaml"
     augmenter_path = base / "prompt-augmenter.md"
 
-    instructions, options, post_actions = _load_prompts(prompts_path)
+    instructions, options, post_actions, option_snippets = _load_prompts(prompts_path)
     agents = _load_agents(agents_path)
 
     if not augmenter_path.exists():
@@ -266,6 +322,7 @@ def load_rules(rules_dir: Path | str = "rules") -> Rules:
     rules = Rules(
         question_instructions=instructions,
         post_actions=post_actions,
+        option_snippets=option_snippets,
         options=options,
         agents=agents,
         rules_hash=full[:12],

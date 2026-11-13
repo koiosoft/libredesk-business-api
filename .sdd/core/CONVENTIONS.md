@@ -82,7 +82,9 @@
 
 - A rule set is exactly three files, all required:
   - `prompts.yaml` — `question.instructions` plus `options:` (closed action list;
-    `none` is mandatory; options may use the extended `{text, post_action}` form).
+    `none` is mandatory; options may use the extended `{text, post_action,
+    snippets}` form — `snippets` is a list of positive, non-duplicated
+    `ai_knowledge_base` ids whose existence is never validated at load (G5)).
   - `agents.yaml` — allowlist keyed by `ai_assistants.id` (**not** `user_id`), each
     with `enabled`, `name`, `prefixes` per channel, optional `revive_team_id` and
     `bot_user_id`.
@@ -92,7 +94,8 @@
   locale dependence.
 - Designated gatekeeper: `app/core/rules.load_rules()` is the only function that
   decides whether a rule set is valid. It raises `RulesError` for any missing file,
-  empty description, unknown channel, non-integer id, or unrecognised `post_action`.
+  empty description, unknown channel, non-integer id, unrecognised `post_action`,
+  or malformed `snippets` (non-list, non-integer, non-positive or duplicated ids).
   Nothing else may soften that verdict.
 - Rules load once at boot; editing any of the three files requires a restart. The
   loaded content hash is exposed on `GET /meta/config` so "which rules are active"
@@ -118,10 +121,12 @@
   not just the slow step, and work runs as event-loop tasks. One thread per event is
   forbidden; there is a regression test that fails if `threading.Thread` reappears in
   the webhook path.
-- Generation has two engines behind `JEV_USE_COPILOT`: copilot (default) sends only
-  an instruction and lets LibreDesk rebuild history, persona and knowledge-base
-  search server-side; completion sends a flat self-contained prompt. Both inherit
-  LibreDesk's fixed rewrite framing, which is why action texts are worded as rewrites.
+- Generation has two engines behind `JEV_USE_COPILOT`: completion (default, D3/G8)
+  sends a self-contained prompt composed here — guardrails, declared snippets and
+  history included, ACCION last; copilot is the explicit escape hatch that lets
+  LibreDesk rebuild context server-side, but its persona omits guardrails. Both
+  inherit LibreDesk's fixed rewrite framing, which is why action texts are worded
+  as rewrites.
 - Published content is sanitised before leaving the service: HTML tag allowlist,
   nested entities decoded first, and Go template braces neutralised
   (`{{ … }}` → broken pair) because LibreDesk renders staff content through
