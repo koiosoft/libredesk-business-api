@@ -1,369 +1,349 @@
 ---
-source: .sdd/inputs/REQUIREMENTS.md
-feature: JEV enforcement loop — evaluar y corregir mensajes de Agentes IA en LibreDesk
-status: DRAFT for review
-role: architect (analysis only; no source files modified)
+source: .sdd/inputs/FOLLOW_UP.md (item 3) + sesión de análisis 2026-11-13
+feature: Cobertura de contexto para el clasificador JEV — snippets, política completa y motor de corrección
+status: listo para implementación. Sin preguntas abiertas, sin riesgos enumerados: §7 son reglas de ejecución y §8 es el límite del alcance.
+role: architect (análisis y plan; ningún archivo de código fue modificado)
+decisions_record: ~/Desktop/acuerdos.md — este plan reproduce decisiones cerradas y no abre ninguna nueva
 ---
 
-# FEATURE: JEV Enforcement Loop
+# FEATURE: Contexto completo para la decisión y la corrección JEV
+
+## 0. Fuentes usadas en este análisis
+
+### Skills del proyecto (leídos como marco de trabajo)
+
+| Skill | Ruta |
+|---|---|
+| Operación del repo hub-api (cascada de recuperación, MCP, entorno, reglas YAML, debugging) | `.agents/skills/libredesk-business-api-project/SKILL.md` |
+| Operación DevOps del stack en `192.168.1.107` (gates, estado, despliegue) | `.agents/skills/libredesk-business-api-devops/SKILL.md` |
+
+### Documentos autoritativos del proyecto
+
+| Documento | Rol |
+|---|---|
+| `.sdd/core/SPEC.md` | arquitectura, límites de capas, superficie HTTP, diseño de persistencia (§3), componentes (§4) |
+| `.sdd/core/CONVENTIONS.md` | estilo de código (§1–2), errores/logging (§4), contrato de los tres YAML (§5), invariantes de dominio (§6), reglas de testing (§7) |
+| `.sdd/core/git/COMMITS.md`, `.sdd/core/git/RELEASE.md` | formato de commit y procedimiento de release |
+| `.sdd/inputs/FOLLOW_UP.md` | estado al cierre de la sesión anterior; **origen de este trabajo** (item 3) |
+| `.sdd/inputs/REQUIREMENTS.md` | alcance y exclusiones explícitas |
+
+### Repositorios inspeccionados (solo lectura)
+
+| Repo | Ruta | Uso aquí |
+|---|---|---|
+| **hub-api** (este workspace) | `/Users/rzavala` → `app/`, `rules/`, `tests/`, `.env.example` | objeto del cambio |
+| **LibreDesk** | `/Volumes/ExtDrive/Home/rzavala/Documents/Projects/Git/libredesk` | fuente autoritativa de comportamiento. **PROHIBIDO MODIFICAR** (§7 acuerdos) |
+
+### Datos de producción analizados
+
+| Artefacto | Ruta | Qué aportó |
+|---|---|---|
+| Payload real enviado a JEV | `/Volumes/ExtDrive/Home/rzavala/Desktop/test-webhooks/prompt-example.json` | medición del clipping y de las cláusulas perdidas |
+| Respuesta real del clasificador | `/Volumes/ExtDrive/Home/rzavala/Desktop/test-webhooks/completion.json` | `choice=turn-structure-violation`, confidence 0.9, probabilidad 0.92 |
+
+### Conocimiento indexado consultado
+
+KB `LibreDesk Docs` (47 chunks) vía MCP `libredesk_docs`. Nota de honestidad: **no aportó la respuesta** — la documentación no cubre el endpoint de snippets ni el armado del persona de copilot. Todo lo afirmado abajo sale de leer el código fuente de LibreDesk, no de sus docs.
+
+---
 
 ## 1. Objetivo
 
-Un webhook que observa cada mensaje publicado por un Agente IA de LibreDesk, lo clasifica con
-JEV (TypeSafe), y —si corresponde— genera una respuesta mejorada usando el mismo proveedor de
-IA configurado en LibreDesk, publicándola como mensaje adicional en la conversación.
+Que JEV pueda evaluar **contra qué** decide, y que el modelo que corrige conozca las reglas que se violaron.
 
-No se borra nada. No se reasigna nada. El agente IA continúa al mando de la conversación.
+Hoy ocurren cuatro cosas que impiden eso:
+
+1. La política del asistente llega al clasificador **recortada a 2400 caracteres por campo**, y el corte cae sobre las cláusulas normativas.
+2. Los **snippets no llegan al clasificador**. El documento de seguimiento afirmaba que era imposible; es falso.
+3. En el motor actual (copilot), **los guardrails nunca llegan al corrector**: quien corrige no ve la regla que se incumplió.
+4. El corrector tampoco recibe el **historial de conversación**.
+
+Resultado observable: correcciones que resuelven una violación y reintroducen otra, y un clasificador que decide sin el material que la propia política manda aplicar.
+
+---
 
 ## 2. Contexto verificado
 
-Todas las afirmaciones de abajo fueron comprobadas en código o documentación, no supuestas.
+Cada fila fue comprobada en código, no supuesta. Las rutas son absolutas donde cruzan repositorio.
+
+### 2.1 Lo que sí existe (y se creía inexistente)
 
 | # | Hecho | Fuente |
 |---|---|---|
-| V1 | `message.created` llega con `meta.ai_assistant_id > 0` solo en respuestas de asistente IA | `libredesk/internal/aiagent/worker.go` → `postReply()` inyecta `meta["ai_assistant_id"] = assistant.ID` antes de `QueueReply` |
-| V2 | El webhook se dispara **después** del refetch, así que el payload trae campos pobados (`author`, `media`) | `libredesk/internal/conversation/message.go` → `AfterMessageInsert()` llama `TriggerEvent(EventMessageCreated, message)` tras `GetMessage()` |
-| V3 | Un asistente borrado sigue apareciendo como autor de mensajes viejos | `libredesk/internal/aiagent/queries.sql` → `get-assistant-user-ids`: *"Deleted assistants stay included: their old replies must still be recognized as AI-authored."* |
-| V4 | El conteo de turnos filtra por `sender_id` del asistente → los mensajes de hub-api **no consumen turnos** | `queries.sql` → `count-ai-turns-since-assignment`: `WHERE ... sender_id = $2` |
-| V5 | `max_turns` default 6, máximo 20; el handoff ocurre al superarlo | `aiagent.go` → `if a.MaxTurns <= 0 \|\| a.MaxTurns > 20 { a.MaxTurns = 6 }`; `worker.go` → `if turns >= assistant.MaxTurns { m.handoff(...) }` |
-| V6 | El handoff asigna al team fallback y **luego** desasigna al usuario | `worker.go` → `UpdateConversationTeamAssignee(...)` seguido de `RemoveConversationAssignee(conv.UUID, AssigneeTypeUser, actor)` |
-| V7 | Cualquier actividad `assigned_user_change` / `self_assign` **reinicia** el conteo de turnos | `queries.sql` → subconsulta `created_at > max(created_at) WHERE activity_type IN ('assigned_user_change','self_assign')` |
-| V8 | El equipo NO distingue IA de humano; el disparador es `assigned_user_id` | `worker.go` → `m.GetAssistantByUserID(int(conv.AssignedUserID.Int))` |
-| V9 | Tipos de usuario incluyen `ai_assistant` explícito | `libredesk/internal/user/models/models.go` → `UserTypeAIAssistant = "ai_assistant"` |
-| V10 | `echo_id` existe en la API de envío de mensajes y se devuelve al emisor para deduplicación | docs LibreDesk → `POST /api/v1/conversations/{cuuid}/messages`, campo `echo_id` |
-| V11 | `POST /api/v1/ai/completion` acepta `{prompt_key, content}` y devuelve `data: string` — usa el provider de Completion ya configurado | docs LibreDesk → AI Completion |
-| V12 | `GET /api/v1/ai/assistants/{id}` devuelve `instructions`, `guardrails`, `tone`, `response_length`, `max_turns`, `enabled` | docs + `queries.sql` → `get-assistant` |
-| V13 | El payload de `message.created` **NO incluye** `inbox_id` ni `inbox_channel` | docs LibreDesk → schema de `message.created` (solo `conversation_id`, `conversation_uuid`) |
-| V14 | `conversation.created` SÍ incluye `inbox_channel` | docs LibreDesk → schema de `conversation.created` |
-| V15 | LibreDesk **no reintenta nunca** y descarta eventos si la cola está llena | docs → "Failed deliveries are not retried", "Events are dropped when the delivery queue is full" |
-| V16 | Entrega exige respuesta <3s (timeout default 15s) | docs → "verify the signature and reply within 3 seconds" |
-| V17 | `timestamp` del envelope se genera con resolución de 1 segundo | `internal/webhook/webhook.go` → `"timestamp": time.Now().UTC().Format(time.RFC3339)` |
-| V18 | JEV Choice devuelve UN `choice`, `probabilities` por opción y `confidence` de la elegida | docs.typesafe.ai/primitives/choice.md |
-| V19 | `confidence` mide qué tan apuntada está la distribución, NO la probabilidad de la opción | choice.md → ejemplo real: `returns` prob 0.61 pero `confidence` 0.42 por ambigüedad entre dos equipos |
-| V20 | Estructura de request JEV: `state`, `model`, `questions{id:{type,instructions,criteria}}` | choice.md → "Request structure" |
-| V21 | `criteria` es mapa `{nombre → descripción}`, hasta 255 opciones, descripciones pueden ser `null` u objeto con campos libres | choice.md |
-| V22 | Latencia reportada de JEV: 70–500 ms end-to-end | es.wikipedia.org/wiki/Jev_(modelo_de_IA) → Rendimiento |
+| V1 | `GET /api/v1/ai/snippets` existe y devuelve todos los snippets con su contenido | `libredesk/cmd/handlers.go:282` → `handleGetAISnippets` (`cmd/ai.go:278`) → `internal/ai/knowledgebase.go:61` → SQL en `internal/ai/queries.sql:28` |
+| V2 | La respuesta incluye `id`, `title`, `content`, `enabled`, `source`, `updated_at`; solo se oculta `embedded_fingerprint` | `internal/ai/models/models.go:86-98` |
+| V3 | Está protegida por `ai:manage`, **la misma permisología** que hub-api ya usa para leer asistentes | `handlers.go:282` vs `app/jev/pipeline.py` (`get_assistant`) y docstring `app/jev/libredesk.py:sgamd` |
+| V4 | `FOLLOW_UP.md` item 3 afirma que hace falta "herramienta nueva en LibreDesk" o "lectura directa de BD (prohibida)". **Ambas conclusiones son falsas.** | `.sdd/inputs/FOLLOW_UP.md` item 3; contradicho por V1–V3 |
+| V5 | La frase literal "no expone API pública" es cierta (rutas públicas = `/api/v1/public/help-centers/*`), pero la consecuencia operativa que se saca de ella no | `handlers.go:344-347` |
+
+### 2.2 El recorte de política
+
+| # | Hecho | Fuente |
+|---|---|---|
+| V6 | El límite es nuestro: `limit: int = 2400`, aplicado **por separado** a `instructions` y a `guardrails` | `app/jev/composer.py:144,155,157` |
+| V7 | `_clip` corta y añade `" [...]"` | `app/jev/composer.py:42-46` |
+| V8 | Medido sobre el payload real: state 6404 chars ≈ 2209 tokens totales. turn_structure 785 / instructions 2457 / guardrails 2415 / conversación 747. **Dos marcadores `[...]` presentes** | `test-webhooks/prompt-example.json` |
+| V9 | Contenido perdido exacto: `NUNCA mencione "según el snippe[...]` (final de INSTRUCTIONS) y `Después del punto 3 no se agrega nada más: ni enl[...]` (final de GUARDRAILS) | ídem |
+| V10 | La política del asistente **ya referencia snippets por ID**: "aplique el snippet S10", "matriz de snippets autorizada". El juez recibe la referencia sin poder resolverla | `prompt-example.json`, bloque POLITICA |
+
+### 2.3 Costo: la justificación del recorte no se sostiene
+
+| # | Hecho | Fuente |
+|---|---|---|
+| V11 | Precio JEV: **$0.042/1M entrada, $0 salida** | dato del owner; cuadra exactamente con el sample versionado `app/jev/classifier.py:ekoya` (357 tok → $0.000014994 ⇒ $0.042/1M) |
+| V12 | Clasificación completa estimada ≈ **$0.0000928**; ~10.7k llamadas por dólar; 50k eventos/mes ≈ $4.64 | cálculo sobre V8 + V11 |
+| V13 | Quitar el recorte suma ~$0.0000467 por llamada | ídem |
+| V14 | El comentario que justifica el límite invoca precisamente ese ahorro insignificante | `app/jev/composer.py:ojafa` ("fractions of a cent") |
+
+**Conclusión:** el costo no es restricción en este sistema. La única restricción real es la dilución de atención, que sí tiene evidencia medida (V18).
+
+### 2.4 El corrector está ciego
+
+| # | Hecho | Fuente |
+|---|---|---|
+| V15 | `BuildCopilotPersona` arma Voice + Languages + Description + Instructions y **omite Guardrails**. Su docstring lo confirma: *"renders the assistant's voice, language and instructions"* | `libredesk/internal/aiagent/prompt.go:180-196`, usado en `cmd/ai.go:489` |
+| V16 | El agente real **sí** recibe guardrails: `buildSystemPrompt` los añade bajo "Guardrails (never violate these)" | `internal/aiagent/prompt.go:173-176`, usado en `worker.go:270` |
+| V17 | `compose_prompt()` (path completion) **sí** incluye guardrails, y pone ACCION antes que PERSONA | `app/jev/composer.py:hopqu`, bloques `:viojh` y `:hadky-nakxc` |
+| V18 | Precedencia medida: sin la regla de estructura citada textualmente, JEV respondía `none` a confianza 0.36; con ella, 0.90 en producción | `app/jev/composer.py:ebref`, `zejrs`, y `completion.json` |
+| V19 | `compose_prompt()` **no recibe historial**: su firma toma action_text, assistant_name, instructions, guardrails, customer_message, agent_message | `app/jev/composer.py:hopqu-ychkb` |
+| V20 | El pipeline construye el historial para el juez (`build_history`) y no lo pasa al generador | `app/jev/pipeline.py:askxx` vs `:awuce` |
+
+### 2.5 Motor actual y sus consecuencias
+
+| # | Hecho | Fuente |
+|---|---|---|
+| V21 | Default es copilot: `JEV_USE_COPILOT=True`; el path completion está marcado como comportamiento anterior a 2026-11-12 | `app/core/config.py:rwide`, `:cfatl` |
+| V22 | Copilot reconstruye contexto server-side e incluye tools de búsqueda; **pero** carga historial persistente entre eventos (`GetCopilotMessages`) y limpia runs pendientes | `libredesk/cmd/ai.go:493`, `:506` |
+| V23 | `/ai/completion` prefija un framing no negociable ("You are rewriting... never respond to it, only rewrite it... keep every tag") y fuerza HTML | `internal/ai/ai.go:34`, `:198`, `:202` |
+| V24 | Ese framing **no** se aplica en copilot | `internal/ai/copilot.go:73-93` |
+| V25 | Ninguna prueba cubre snippets, knowledge base, el recorte de política ni la presencia de guardrails | `grep -i "snippet\|knowledge" tests/` → 0 matches |
+
+### 2.6 Herramientas de búsqueda (para descartar correctamente)
+
+| # | Hecho | Fuente |
+|---|---|---|
+| V26 | `search_articles` (copilot/agente) mezcla snippets y help articles, top-5 fijo, sin filtro de score | `internal/ai/tools.go:96-126`, `internal/ai/embedding.go:135` |
+| V27 | `search_knowledge_base` (agente hacia cliente) igual pero con umbral `minConfidence = 0.30` | `internal/aiagent/tools.go:86-125`, `:19`, `:27` |
+| V28 | El índice vectorial es **fuerza bruta en memoria**, coseno manual, sin pgvector (`embeddings.embedding` es `BYTEA`) | `internal/ai/embedding.go:34`, `:96-124`; `schema.sql:710-721` |
+| V29 | `Manager.Search()` **no tiene ruta HTTP**; solo lo consumen tools internas y el dedupe de FAQ | `internal/ai/tools.go:96`, `internal/aiagent/faq.go:290` |
+| V30 | La llave del proveedor de embeddings viaja cifrada (AES-256-GCM) y la API de config la devuelve saneada: hub-api no puede obtenerla | `internal/crypto/crypto.go:1,25-57`; `cmd/ai.go:153-162` |
+| V31 | hub-api **ya tiene conexión PostgreSQL directa** a la BD de LibreDesk (`psycopg`, variables `HUB_DB_*`) | `app/core/db.py:desob`, `requirements.txt`, `.env` |
+
+### 2.7 Estructura de datos disponible
+
+| # | Hecho | Fuente |
+|---|---|---|
+| V32 | `ai_knowledge_base` **no tiene columna de código**: `id SERIAL`, `title`, `content`, `enabled`, `source`, `source_url`, `embedded_fingerprint` | `schema.sql:695-706` |
+| V33 | Solo existen dos tipos de conocimiento indexado: snippet y help article | `internal/ai/models/models.go:24,27`; `schema.sql:28` |
+| V34 | La BD de snippets es compartida globalmente, no por asistente | `internal/aiagent/aiagent.go:2` |
+| V35 | Estado declarado por el owner: la base de artículos está **vacía**; solo hay snippets, y son pocos | input del owner |
+| V36 | Al indexar, LibreDesk **prefijea título y encabezado de sección** a cada chunk | `internal/stringutil/htmlchunker.go:77-78`, usado en `embedding.go:173` |
+
+---
 
 ## 3. Decisiones de diseño acordadas
 
-### D1 — Un endpoint de ingesta, no uno por evento
-`/webhooks/libredesk` maneja todos los eventos y despacha internamente por el campo `event`.
+Estas están **cerradas** en `~/Desktop/acuerdos.md`. Se reproducen aquí como especificación, no como propuesta. No reabrir en conversación; para cambiar una, se reemplaza allí con fecha y motivo.
 
-**Por qué:** LibreDesk envía todo a UNA URL fija por webhook configurado; el nombre del evento viaja
-dentro del body. Enrutear por `/webhooks/{evento}` obligaría a crear N webhooks en Admin →
-Integraciones → Webhooks, con el mismo payload repetido. No aporta nada.
-
-La convención de rutas queda `/webhooks/{origen}` (una ruta por sistema que empuja eventos:
-`libredesk`, y mañana otros). Cambiar `/hooks/libredesk` → `/webhooks/libredesk` es parte del trabajo.
-
-### D2 — Cuándo NO actuar (tres guardas)
-
-| Guarda | Regla | Base |
+| # | Decisión | Fundamento |
 |---|---|---|
-| **G1 — JEV dice no intervenir** | La acción `none` SIEMPRE debe existir en `prompts.yaml`. Acción ausente o inválida = `none` = no publicar, solo loggear | Requisito del usuario; V21 permite declararla como opción normal |
-| **G2 — No reclasificar salida propia** | Todo mensaje publicado por hub-api lleva `echo_id: "jev-retry:<uuid-mensaje-origen>"`. Si un `message.created` trae ese prefijo, es nuestra propia salida → salir | V10 |
-| **G3 — Solo agentes habilitados** | Allowlist explícita en `agents.yaml`. ID ausente = fail-closed (ignorar + log). `enabled: false` = ignorar silencioso. GET del agente falla (borrado) = ignorar + WARN | V3, V8, V9 |
+| **D1** | Eliminar el recorte de política en el juez. `instructions` y `guardrails` viajan completos | V6–V14: el corte pierde cláusulas normativas y su única justificación (ahorro) es insignificante |
+| **D2** | Invariante: *el modelo nunca corrige a ciegas*. Recibe el mismo contexto que tuvo quien generó la respuesta, más el refuerzo de JEV, más los snippets relevantes | V15–V20 |
+| **D3** | Motor de generación: **`/ai/completion` con `compose_prompt()` completo**. `JEV_USE_COPILOT` pasa a default `False` | V15–V17, V22: completion controla todo el contexto, incluye guardrails, y evita el historial persistente entre leads |
+| **D4** | Método de snippets: interfaz abstracta con backend de tabla. El backend semántico queda **fuera de alcance indefinido** | V28–V30: retrieval filtrado no tiene API, requiere tocar LibreDesk, y su llave de embeddings no es accesible |
+| **D5** | Clave de lookup de snippets: **`id` numérico**, declarado en RULES | V32: no existe columna de código; `id` sobrevive la migración prevista a persistencia propia (Redis/Postgres) con FK sobre PK |
+| **D6** | Pruebas antes que implementación: golden-payload del state + fixture capturado literal de la API de snippets | V25 + lecciones registradas en `FOLLOW_UP.md` ("un doble diseñado por uno mismo…") |
+| **D7** | Corrección documental inmediata: `FOLLOW_UP.md` item 3, `SPEC.md:289-290`, `composer.py:ifmes`. Y declarar por escrito que leer `ai_knowledge_base` por SQL directo está prohibido | V4, V31 |
+| **D8** | `JEV_COMPLETION_PROMPT_KEY` es obligatoria en producción. Si falta, se usa el primer registro de `ai_prompts` y se loguea advertencia visible. Tema de despliegue, no de arquitectura | análisis del prompt key; `internal/ai/ai.go:425-429` |
+| **D9** | **No se modifica el código fuente de LibreDesk.** Es solo lectura | restricción dura del owner |
 
-`echo_id` cumple doble función: guarda G2 **y** llave natural del registro de "ya evaluado"
-(no se necesita tabla separada).
+### 9. Orden final del prompt (acordado, cierra O-1/O-2/O-3)
 
-### D3 — Filtro de entrada completo
-Un mensaje entra al pipeline solo si **las cuatro condiciones** se cumplen:
-
-```
-payload.type == "outgoing"
-AND payload.private == false
-AND payload.meta.ai_assistant_id > 0
-AND payload.author.type == "ai_assistant"
-```
-
-Se exigen las dos señales de IA (`meta.ai_assistant_id` y `author.type`) porque son independientes
-y redundantes: la primera la pone `postReply()`, la segunda viene del tipo de usuario.
-
-### D4 — Identidad de publicación
-Hub-api publica con su **propio usuario**, no con el del asistente.
-
-**Consecuencia verificada (V4):** los mensajes de hub-api NO cuentan en `count-ai-turns-since-assignment`,
-así que esta feature **no acelera ni retrasa el handoff por `max_turns`**. El comportamiento existente queda intacto.
-
-Si se publicara como el asistente, cada corrección consumiría 1 de los 6 turnos y además inflaría las
-métricas de Performance del asistente (replies, CSAT y resolución cuentan por `sender_id` — `queries.sql` líneas 82, 88-92).
-
-### D5 — Composición del prompt final
-```
-prompt final = contenido de prompt-augmenter.md
-             + bloque de prompts.yaml[key elegido por JEV]
-             + instructions reales del asistente (vía GET /api/v1/ai/assistants/{id}, V12)
-```
-Solo acciones existentes en el YAML. Acción ausente o inválida = `none`.
-
-### D6 — LLM vía LibreDesk, no directo
-Se usa `POST /api/v1/ai/completion` (V11). Hub-api **no** conoce base URL, model, temperature ni
-max tokens del proveedor. Elimina duplicar configuración y mantiene la auditoría del lado de LibreDesk.
-
-**Limitación aceptada:** ese endpoint recibe un único `content` plano, sin separar system/user roles.
-Toda la composición viaja dentro de ese string.
-
-### D7 — Prefijo según canal
-| Canal | Texto |
-|---|---|
-| LiveChat, WhatsApp | `Pensando un poco mejor lo comentado... {respuesta}` |
-| Email | `Para ser más precisos, o con otro punto de vista {respuesta}` |
-
-El `>` del borrador original fue error de tipeo y se elimina (confirmado).
-
-### D8 — Reglas precargadas en arranque
-Todos los YAML se leen al subir. Cambiar una regla exige reiniciar el servicio. Se expone
-versión/hash de reglas cargadas en `/meta/config` (protegido con API key), **no** en `/healthz`
-(este último es probe sin auth del contenedor y debe seguir sin datos).
-
-### D9 — Concurrencia con async de FastAPI
-Reemplazar `threading.Thread(daemon=True)` por handlers `async` + `httpx.AsyncClient` +
-`asyncio.Semaphore(N)`.
-
-**Por qué:** FastAPI es asíncrono nativo. El costo real del pipeline es espera de red
-(JEV 70–500 ms por V22; LLM 1–30 s), no CPU de Python. Threads ilimitados por evento introducen:
-sin tope de concurrencia, muerte silenciosa de trabajos a medias al reiniciar (~8 MB de stack/hilo),
-y riesgo de agotar cuotas del proveedor en ráfagas. Con `async` + semáforo, un worker sostiene
-decenas de esperas concurrentes con control explícito.
-
-**Python no es el cuello de botella.** El ajuste es de modelo de concurrencia, no de lenguaje.
-
-### D10 — Persistencia del evento recibido
-Antes de responder 202, guardar el evento en una tabla propia de hub-api.
-
-**Por qué:** con "cero reintentos" (V15) y descartes por cola llena, si hub-api se cae durante un
-reintento ese mensaje nunca se evalúa y no hay forma de saberlo. Este registro resuelve tres cosas
-a la vez: auditoría, idempotencia duradera, y reprocesamiento de lo que quedó a medias.
-
-## 4. Estructura de archivos propuesta
+**Juez** — texto plano, sin roles, en `build_state_for_jev`:
 
 ```
-rules/
-├── prompts.yaml          # acción JEV → texto system a inyectar (allowlist cerrada, incluye `none`)
-├── agents.yaml           # agent_id → enabled + prefijos por canal
-└── prompt-augmenter.md   # descriptor: cómo se compone el prompt final
-
-app/
-├── core/
-│   ├── config.py         # + CLASSIFIER_URL, CLASSIFIER_API_KEY, CLASSIFIER_MODEL,
-│   │                     #   CLASSIFIER_REASONING_EFFORT, CLASSIFIER_TEMPERATURE, CLASSIFIER_MAX_TOKENS
-│   │                     #   + JEV_MIN_CONFIDENCE, JEV_MAX_CORRECTIONS, JEV_CONCURRENCY
-│   └── rules.py          # NUEVO: carga en arranque + hash/versión de reglas
-├── routers/
-│   └── webhooks/
-│       └── libredesk.py  # RENOMBRAR hooks.py; /hooks/libredesk → /webhooks/libredesk
-└── jev/                  # NUEVO: pipeline de enforcement
-    ├── intake.py         # guardas G1-G3, filtro D3, persistencia D10
-    ├── classifier.py     # request JEV (state/model/questions), parseo de answers
-    ├── composer.py       # aplica prompt-augmenter.md + bloque de prompts.yaml + instructions del agente
-    ├── generator.py      # POST /api/v1/ai/completion
-    └── publisher.py      # POST .../messages con echo_id + prefijo por canal
+1. ESTRUCTURA OBLIGATORIA DEL TURNO       (regla A copiada de guardrails)
+2. POLITICA / INSTRUCCIONES               (sin recorte — D1)
+3. LIMITES / GUARDRAILS                   (sin recorte — D1)
+4. SNIPPETS OBLIGATORIOS DE CUMPLIMIENTO (verifique la respuesta contra ellos)   ← nuevo
+5. HISTORIAL DE LA CONVERSACION
+6. EL ULTIMO MENSAJE DEL CLIENTE
+7. LA RESPUESTA QUE DIO EL ASISTENTE      (siempre al final — V18)
 ```
 
-### Formato de `rules/prompts.yaml`
+**Corrector** — un solo string en `content`, en `compose_prompt`:
+
+```
+[CERO] PREFIJO DE LIBREDESK               (V23, no controlable)
+[UNO]  ROL
+[TRES] PERSONA
+        ├─ Instrucciones del asistente
+        ├─ Límites que NUNCA puede cruzar
+        └─ Snippets obligatorios de cumplimiento            ← nuevo
+[cuatro] HISTORIAL                                          ← nuevo en este path
+[cinco]  MENSAJE DEL CLIENTE
+[seis]   RESPUESTA DEL ASISTENTE A MEJORAR
+[siete]  ACCION APLICAR                                     ← se mueve de [DOS] a último
+```
+
+La precedencia de JEV se expresa **por posición** (último bloque), no con una frase declarativa.
+
+---
+
+## 4. Arquitectura del cambio
+
+### 4.1 Componentes afectados
+
+| Componente | Archivo | Cambio | Riesgo |
+|---|---|---|---|
+| Compositor del state del juez | `app/jev/composer.py` | quitar `limit` de `build_policy_header`; insertar bloque de snippets entre política e historial | Medio — cambia el input del clasificador; exige recalibrar umbrales |
+| Compositor del prompt del corrector | `app/jev/composer.py` | mover ACCION al final; añadir parámetro `history`; añadir sub-cláusula de snippets en PERSONA | Alto — altera el framing heredado (V23) |
+| Cliente LibreDesk | `app/jev/libredesk.py` | método nuevo `get_snippets()` con caché | Bajo — patrón existente (`get_assistant`) |
+| Pipeline | `app/jev/pipeline.py` | resolver snippets de la opción elegida; pasar historial al corrector; invertir default de motor | Medio |
+| Cargador de reglas | `app/core/rules.py` | aceptar clave opcional `snippets: [id, ...]` en la forma extendida de opción | Bajo — ya soporta forma extendida `{text, post_action}` |
+| Configuración | `app/core/config.py`, `.env.example` | `JEV_USE_COPILOT=False`; advertencia de arranque si `JEV_COMPLETION_PROMPT_KEY` está vacía | Bajo |
+| Reglas | `rules/prod/prompts.yaml`, `rules/example/prompts.yaml` | declarar IDs de snippet por opción cuando aplique | Medio — cambia el hash de reglas |
+| Documentación | `.sdd/inputs/FOLLOW_UP.md`, `.sdd/core/SPEC.md`, `.sdd/core/CONVENTIONS.md` | corregir hechos falsos; declarar prohibición de SQL directo; re-etiquetar completion como motor activo | Bajo |
+| Pruebas | `tests/` | golden payload + contrato de snippets | — |
+
+### 4.2 Superficie nueva en hub-api
+
+```
+app/jev/snippets.py            (nuevo)
+    @dataclass(frozen=True) Snippet: id:int, title:str, content:str, updated_at
+    class SnippetSource(Protocol):            ← único punto de sustitución para D4
+        def resolve(self, ids: Sequence[int]) -> list[Snippet]: ...
+    class TableSnippetSource:                 ← implementación hoy
+        cache por max(updated_at); filtra enabled; preserva el orden declarado;
+        ID ausente => log de advertencia y se omite (nunca fail-closed)
+    def format_snippets(items) -> str         ← helper ÚNICO, consumido por ambos prompts
+```
+
+El formateo produce `- {title}: {content}` por línea. **No** replica el prefijo de chunking de LibreDesk (V36): sería reimplementar una fórmula ajena, que es justamente la lección registrada sobre el separador de hash.
+
+### 4.3 Contrato YAML extendido
+
+`_load_prompts` ya admite dos formas por opción (`rules.py:rfble`). Se añade un tercer campo opcional:
+
 ```yaml
 options:
-  none: "Ninguna de las acciones aplica. El mensaje del agente es adecuado tal como está."
-  ask-technological-stack: "Debes preguntar, con mucha cortesía, sobre el STACK deseado (PHP, HTML, PYTHON, JAVA)"
-  ask-architecture: "Debes preguntar, con mucha cortesía, sobre la arquitectura deseada BACKEND/MOBILE"
-  close-forward-human: "Debes resumir lo conversado, anunciar la entrada del ESPECIALISTA COMERCIAL, o si lo prefiere, agendar la reunión técnica con el Arquitecto. Luego debes hacer el HANDOFF"
-```
-Las claves de `options:` son los KEYS que se usan en la composición y se mapean directo a
-`criteria` de JEV (V20, V21) — misma forma `{nombre → descripción}`, sin transformación.
-
-### Formato de `rules/agents.yaml`
-```yaml
-agents:
-  7:
-    enabled: true
-    prefixes:
-      chat:  "Pensando un poco mejor lo comentado..."
-      email: "Para ser más precisos, o con otro punto de vista"
-  9:
-    enabled: false
+  close-forward-human:
+    text: >-
+      Reescribe la respuesta resumiendo lo conversado...
+    post_action: revive-assistant
+    snippets: [7, 12]          # NUEVO: ids de ai_knowledge_base, opcionales
 ```
 
-Separado de `prompts.yaml` porque los agentes y las acciones son dimensiones distintas:
-meter el ID de agente dentro de cada acción obligaría a duplicar todas las acciones por agente
-(3 agentes × 6 acciones = 18 entradas que se desincronizan).
+Validación en carga: enteros positivos, sin duplicados. **No** se valida que el ID exista — la BD cambia sin reiniciar hub-api y una validación dura abortaría el arranque por un borrado ajeno.
 
-## 5. Flujo del pipeline
+---
+
+## 5. Flujo resultante
 
 ```mermaid
 flowchart TD
-    A[POST /webhooks/libredesk] --> B{HMAC válido<br/>sobre raw body?}
-    B -- no --> Z1[403]
-    B -- sí --> C[Guardar evento en BD propia D10]
-    C --> D[Responder 202 inmediato<br/>cumple V16 <3s]
-    D --> E{event == message.created?}
-    E -- no --> Z2[log, salir]
-    E -- sí --> F{Filtro D3:<br/>outgoing, !private,<br/>ai_assistant_id>0,<br/>author.type==ai_assistant}
-    F -- no --> Z3[salir]
-    F -- sí --> G{echo_id empieza con<br/>jev-retry:? G2}
-    G -- sí --> Z4[es mi propia salida, salir]
-    G -- no --> H{UUID origen ya en<br/>registro de evaluados?}
-    H -- sí --> Z5[duplicado, salir]
-    H -- no --> I{agent_id en agents.yaml<br/>y enabled? G3}
-    I -- no --> Z6[fail-closed, log]
-    I -- sí --> J[Obtener canal<br/>inbox_channel]
-    J --> K[POST CLASSIFIER_URL<br/>Choice con criteria=prompts.yaml<br/>V20 latencia 70-500ms]
-    K --> L{choice == none?<br/>confidence < umbral?}
-    L -- sí --> Z7[no publicar, solo log]
-    L -- no --> M[GET /ai/assistants/id<br/>instructions reales V12]
-    M --> N[Componer prompt<br/>augmenter.md + bloque + instructions]
-    N --> O[POST /api/v1/ai/completion<br/>usa provider de LibreDesk V11]
-    O --> P[Prefijo según canal D7]
-    P --> Q[POST /conversations/uuid/messages<br/>sender_type=agent, echo_id=jev-retry:... V10]
-    Q --> R[Registrar corrección<br/>contra tope por conversación]
+    W["message.created<br/>meta.ai_assistant_id > 0"] --> P["pipeline.run"]
+    P --> A["get_assistant (cacheado)"]
+    P --> H["get_conversation_messages → build_history"]
+    A --> PH["build_policy_header<br/>SIN recorte (D1)"]
+    P --> SN["SnippetSource.resolve(ids de la opción)<br/>GET /api/v1/ai/snippets cacheado"]
+    PH --> ST["build_state_for_jev<br/>7 bloques, orden §9"]
+    H --> ST
+    SN --> ST
+    ST --> J["JEV classify<br/>POST /api/alpha/decisions"]
+    CR["rules options + criteria"] --> J
+    J -->|"none / bajo umbral"| X["no publicar"]
+    J -->|"accepted"| AC["action_text + snippets de esa opción"]
+    AC --> CP["compose_prompt<br/>ACCION al final (D3)"]
+    H --> CP
+    SN --> CP
+    CP --> GEN["POST /api/v1/ai/completion<br/>prompt_key: obligatoria o fallback + log (D8)"]
+    GEN --> PUB["publish_correction"]
+    style SN fill:#d9ead3
+    style PH fill:#d9ead3
+    style CP fill:#fff2cc
 ```
+
+---
 
 ## 6. Tareas accionables
 
-### Fase 1 — Reorganización de rutas (prerrequisito)
-- [ ] T1.1 Crear `app/routers/webhooks/` y mover `hooks.py` → `webhooks/libredesk.py`
-- [ ] T1.2 Cambiar prefix del router `/hooks` → `/webhooks` (endpoint resultante: `POST /webhooks/libredesk`)
-- [ ] T1.3 Actualizar `app/main.py` (`include_router`) y cualquier referencia en `.env.example` / docs internas
-- [ ] T1.4 Verificar que ningún handler dependa de la ruta anterior (ninguno lo hace: el despacho es por `body.event`)
+Ordenadas por dependencia. Cada una es verificable por separado.
 
-### Fase 2 — Carga de reglas
-- [ ] T2.1 Crear `rules/prompts.yaml` con `none` incluido como opción obligatoria
-- [ ] T2.2 Crear `rules/agents.yaml` con estructura allowlist
-- [ ] T2.3 Crear `rules/prompt-augmenter.md` (plantilla de composición)
-- [ ] T2.4 Implementar `app/core/rules.py`: lectura en arranque, validación de esquema, cálculo de hash
-- [ ] T2.5 Rechazar el arranque si un YAML está mal formado (consistente con el fail-closed de `config.py`)
-- [ ] T2.6 Exponer hash/versión de reglas en `/meta/config` (dejar `/healthz` limpio)
+### Fase 0 — Corrección documental (bloquea todo lo demás moralmente, no técnicamente)
 
-### Fase 3 — Configuración
-- [ ] T3.1 Agregar a `Settings`: `CLASSIFIER_URL`, `CLASSIFIER_API_KEY`, `CLASSIFIER_MODEL`, `CLASSIFIER_REASONING_EFFORT`, `CLASSIFIER_TEMPERATURE`, `CLASSIFIER_MAX_TOKENS`
-- [ ] T3.2 Agregar controles de negocio: `JEV_MIN_CONFIDENCE`, `JEV_MAX_CORRECTIONS`, `JEV_CONCURRENCY`
-- [ ] T3.3 Validadores fail-closed coherentes con `_validate_key` / `_validate_allowlist` existentes
-- [ ] T3.4 Documentar variables en `.env.example`
+- [ ] **T0.1** Reescribir `FOLLOW_UP.md` item 3: el endpoint existe, la conclusión de "hace falta herramienta nueva" es falsa, y el bloqueo real era otro.
+- [ ] **T0.2** Corregir `SPEC.md:289-290` (misma afirmación propagada).
+- [ ] **T0.3** Corregir `composer.py:ifmes` (*"which hub-api cannot read directly"*).
+- [ ] **T0.4** Declarar en `SPEC.md` §3 que leer `ai_knowledge_base` por SQL directo desde hub-api está prohibido, con su motivo (la conexión existe y funciona — V31 — así que hay que decirlo, no darlo por supuesto).
+- [ ] **T0.5** Actualizar `CHANGELOG.md`.
 
-### Fase 4 — Guardas y estado
-- [ ] T4.1 Crear tabla propia de hub-api para eventos recibidos (auditoría + idempotencia + reproceso)
-- [ ] T4.2 Implementar guardas G1/G2/G3 en `jev/intake.py`
-- [ ] T4.3 Implementar filtro D3 (cuatro condiciones)
-- [ ] T4.4 Migrar dedupe de `_seen` en RAM al registro persistente (resuelve también V17: timestamp de 1 segundo)
-- [ ] T4.5 Tope de correcciones por conversación
+### Fase 1 — Pruebas primero (D6)
 
-### Fase 5 — Pipeline JEV
-- [ ] T5.1 `jev/classifier.py`: armar request `{state, model, questions}` con `criteria` desde `prompts.yaml`
-- [ ] T5.2 Parsear `answers.<id>.{choice, confidence, probabilities}` (V18)
-- [ ] T5.3 Umbral sobre `confidence`, **no** sobre `probabilities` (V19 — son ejes distintos)
-- [ ] T5.4 Decisión top-1 (ver Open Question O3)
-- [ ] T5.5 Manejar error de red / timeout del clasificador: no publicar, loggear
+- [ ] **T1.1** Golden-payload del state: fixture capturado literal (estilo `prompt-example.json`), snapshot exacto de los 7 bloques. Detecta recortes y pérdida de campos.
+- [ ] **T1.2** Fixture capturado de `GET /api/v1/ai/snippets` con su envoltura real. Verificar si es lista plana o paginada **antes** de escribirla en código — lección registrada del bug de paginación.
+- [ ] **T1.3** Test de contrato: `enabled=false` queda excluido; ID inexistente advierte y omite sin fallar.
 
-### Fase 6 — Generación y publicación
-- [ ] T6.1 Cliente `GET /api/v1/ai/assistants/{id}` para obtener `instructions` del agente (V12)
-- [ ] T6.2 Cache de esa config por `agent_id` (invalidar al reiniciar, coherente con D8)
-- [ ] T6.3 `jev/composer.py`: aplicar `prompt-augmenter.md` + bloque de acción + instructions
-- [ ] T6.4 `jev/generator.py`: `POST /api/v1/ai/completion` con `prompt_key` + `content` (V11)
-- [ ] T6.5 Resolver canal → prefijo de `agents.yaml` (D7)
-- [ ] T6.6 `jev/publisher.py`: `POST /conversations/{uuid}/messages` con `sender_type=agent`, `echo_id=jev-retry:<uuid>` (V10)
-- [ ] T6.7 Para email: verificar `content_type` y escapado (el contenido pasa por plantillas HTML)
+### Fase 2 — Política completa al juez (D1)
 
-### Fase 7 — Eliminar `threading.Thread` (no es opcional ni cosmético)
+- [ ] **T2.1** Quitar `limit` de `build_policy_header`; conservar `_clip` para conversación e historial.
+- [ ] **T2.2** Ejecutar T1.1 y medir efecto sobre confianza/probabilidad con casos reales archivados.
+- [ ] **T2.3** Si la tasa de `none` sube, revisar redacción de opciones antes que umbrales.
 
-**Qué se quita exactamente.** Hoy, en `receive_webhook`, cada evento aceptado lanza un hilo nuevo:
+### Fase 3 — Snippets (D4, D5)
 
-```python
-threading.Thread(target=_dispatch, args=(event_name, body), daemon=True).start()
-```
+- [ ] **T3.1** `app/jev/snippets.py` con `TableSnippetSource` y `format_snippets`.
+- [ ] **T3.2** `LibreDeskClient.get_snippets()` con caché por `max(updated_at)`.
+- [ ] **T3.3** `rules.py`: aceptar `snippets:` opcional, exponerlo en `Rules`.
+- [ ] **T3.4** Insertar bloque 4 en `build_state_for_jev` con el título acordado.
+- [ ] **T3.5** Documentar el backend semántico como **no alcanzable** (V28–V30), no como pendiente.
 
-Y `_dispatch` invoca a los handlers de forma síncrona dentro de ese hilo. El reemplazo es ejecutar el
-despacho como tarea asíncrona sobre el event loop de FastAPI, con `httpx.AsyncClient` para todas las
-llamadas salientes (JEV, `/api/v1/ai/*`) y un `asyncio.Semaphore` como tope global.
+### Fase 4 — Motor y corrector (D3, D2)
 
-**Por qué hay que quitarlo — cuatro razones concretas:**
+- [ ] **T4.1** `JEV_USE_COPILOT` default `False`; actualizar `config.py:cfatl`, `SPEC.md:enbro`, `CONVENTIONS.md:slola`, `rules/*/prompt-augmenter.md` (hoy dicen "legacy"/"copilot engine on").
+- [ ] **T4.2** `compose_prompt()`: nuevo parámetro `history`; ACCION al final; sub-cláusula de snippets en PERSONA.
+- [ ] **T4.3** Pipeline: pasar historial al corrector y los snippets resueltos.
+- [ ] **T4.4** Golden-payload del prompt del corrector (mismo estándar que T1.1).
 
-1. **No tiene tope de concurrencia.** Un hilo por evento significa que una ráfaga (importación de
-   correos, rebote de un servicio, campaña) crea N hilos simultáneos, cada uno abriendo su propia
-   conexión HTTP al LLM, sin nada que lo frene. Con esta feature el problema se agrava: cada mensaje
-   del agente IA dispara JEV + un `POST /api/v1/ai/completion` que tarda segundos. Ráfagas de mensajes
-   del agente son la norma, no la excepción.
+### Fase 5 — Despliegue (D8)
 
-2. **Los trabajos mueren en silencio.** Son hilos `daemon=True`: cuando el proceso termina (deploy,
-   reinicio, OOM), Python no los espera ni avisa. Un reintento a mitad de la llamada al LLM desaparece
-   sin dejar rastro. Con latencias de 1–30 s por generación, siempre hay trabajos a medias en un
-   despliegue. Choca directo con V15: LibreDesk no reintenta nunca, así que ese evento perdido no
-   vuelve a llegar jamás.
+- [ ] **T5.1** Advertencia de arranque si `JEV_COMPLETION_PROMPT_KEY` está vacío, replicando el patrón de `main.py` para otras variables.
+- [ ] **T5.2** Fallback: tomar el primer registro de `ai_prompts` vía `GET /api/v1/ai/prompts`, logueando que la variable se olvidó.
+- [ ] **T5.3** Crear el prompt custom definitivo en Admin → AI y fijar su clave en el entorno de producción.
 
-3. **Costo de memoria por espera ociosa.** Cada hilo reserva ~8 MB de stack; 200 hilos concurrentes
-   son ~1.6 GB de memoria virtual gastada en esperar red. El trabajo real de CPU (verificar HMAC,
-   parsear JSON de 2–10 KB) es de microsegundos; todo lo demás es I/O. Los threads son la herramienta
-   equivocada para carga dominada por I/O.
+### Fase 6 — Validación en vivo
 
-4. **Desperdicia lo que FastAPI ya da gratis.** FastAPI es asíncrono de nacimiento. Un solo worker con
-   `async def` sostiene decenas de esperas concurrentes sin crear un hilo por evento, y el `Semaphore`
-   permite limitar reintentos simultáneos de forma explícita y medible. Manteniendo threads, ese
-   control queda del lado del SO.
+- [ ] **T6.1** Observar una corrección disparada por un lead real con el contexto nuevo.
+- [ ] **T6.2** Recalibrar umbrales con esa muestra (pendiente abierto desde la sesión anterior, no decidir antes).
 
-**Aclaración para quien implemente:** esto NO es un cambio de lenguaje ni de framework, y Python no era
-el cuello de botella. Es un cambio de *modelo de concurrencia*. El costo del pipeline sigue dominado por
-la red (JEV 70–500 ms por V22; LLM 1–30 s), no por el runtime.
+---
 
-**Restricción que no se toca.** El 202 debe seguir respondiéndose ANTES de cualquier llamada lenta
-(V16 exige <3s). Pasar a `async` no autoriza a hacer el handler esperado: lo único que puede ir antes
-del 202 es la persistencia del evento (D10), que es un INSERT local barato.
-- [ ] T7.1 Crear un `httpx.AsyncClient` compartido en `lifespan` de `app/main.py` (no uno por request) y cerrarlo al apagar
-- [ ] T7.2 Convertir los handlers del registry `HANDLERS` a `async def`; `_dispatch` pasa a ser coroutine con `await` secuencial por handler
-- [ ] T7.3 **Eliminar** `threading.Thread(target=_dispatch, ..., daemon=True).start()` de `receive_webhook` y reemplazarlo por despacho asíncrono bajo `Semaphore`
-- [ ] T7.4 Aplicar `asyncio.Semaphore(JEV_CONCURRENCY)` alrededor del pipeline completo (JEV + generación + publicación), no solo del paso lento individual
-- [ ] T7.5 Confirmar que el 202 se responde ANTES de cualquier llamada lenta (V16): lo único permitido antes es el INSERT de D10
-- [ ] T7.6 Verificar que ningún handler restante use bloqueo síncrono (llamadas `requests`, `psycopg` en hilo de event loop); si existe, envolver o migrar
+## 7. Reglas de ejecución
 
-### Fase 8 — Pruebas (aprovechando la instancia de desarrollo)
-- [ ] T8.1 Usar el botón **Send test** de LibreDesk → evento `webhook.test`
-      ⚠️ Su payload es solo `{id, name}` (verificado en `webhook.go` → `SendTestWebhook`). Hoy eso produce
-      clave de dedupe `webhook.test|<ts>|` **idéntica para todas las pruebas**, y dos pruebas en el mismo
-      segundo hacen que la segunda se descarte en silencio. Esto limita la capacidad de probar.
-- [ ] T8.2 Prueba de bucle: confirmar que un mensaje publicado por hub-api NO reentra al pipeline
-- [ ] T8.3 Prueba de turnos: verificar empíricamente que tras N correcciones de hub-api el handoff por
-      `max_turns` sigue disparándose igual que sin hub-api (valida D4 contra V4/V5)
-- [ ] T8.4 Prueba de reinicio: matar el proceso a mitad de un reintento y comprobar que el evento persistido
-      puede reprocesarse (valida D10)
-- [ ] T8.5 Prueba por canal: mismo caso en livechat, WhatsApp y email → prefijos correctos
-- [ ] T8.6 Prueba fail-closed: agente ID no declarado en `agents.yaml` → no se toca nada
+Instrucciones, no advertencias. Si algo aquí entra en conflicto con lo que el ejecutante quiera inferir, gana esta tabla.
 
-## 7. Riesgos identificados
+| # | Regla |
+|---|---|
+| G1 | Ningún cambio en `composer.py` antes de tener capturados los fixtures de T1.1 y T1.2. Sin fixture no hay edición. |
+| G2 | Ningún límite de caracteres sobre `instructions` ni `guardrails` en el juez. Se eliminaron a propósito; no reintroducirlos. |
+| G3 | Techo del bloque de snippets: 8000 caracteres con `_clip` y aviso en log al superarlo. Bajo ese umbral, sin techo. |
+| G4 | ID de snippet inexistente ⇒ advertir en log y omitir. Nunca abortar la clasificación por eso. |
+| G5 | Al cargar RULES solo se valida formato de `snippets:` (enteros positivos, sin duplicados). No se consulta la BD. |
+| G6 | El orden de bloques de §9 es contractual. En el corrector, ACCION va al final y no se mueve: si el modelo no la aplica, se refuerza su encabezado. |
+| G7 | Snippets formateados `- {title}: {content}` desde un helper único. No replicar el prefijo de chunking de LibreDesk. |
+| G8 | Motor de generación: `/ai/completion`. No evaluar copilot durante la implementación. |
+| G9 | Clave de prompt obligatoria. Si falta, usar el primer registro que devuelve `GET /api/v1/ai/prompts` tal cual llega, sin reordenar, y loguear cuál se usó. |
+| G10 | Umbrales de confianza y probabilidad: no se tocan en este feature. |
+| G11 | `CLASSIFIER_LOG_REQUEST` / `COMPLETION_LOG_REQUEST`: activar solo temporalmente para medir y apagar después. Contienen texto del cliente. |
+| G12 | Cualquier necesidad de cambiar LibreDesk se reporta y se detiene la tarea. No se implementa. |
 
-| # | Riesgo | Severidad | Mitigación |
-|---|---|---|---|
-| R1 | Sin tope de reintentos concurrentes, una ráfaga agota cuotas del proveedor o derriba LibreDesk | Alta | T7.3 `Semaphore` |
-| R2 | Trabajos a medios perdidos en deploy/reinicio, sin registro | Alta | D10 + T8.4 |
-| R3 | Dedupe actual ineffective: `_seen` en RAM, se pierde al reiniciar, no funciona con >1 réplica | Alta | T4.4 |
-| R4 | Colisión de clave de dedupe por timestamp de 1 segundo (V17) | Media | Pasar a `echo_id`/UUID como llave (D2) |
-| R5 | Coste recurrente: JEV + LLM por **cada** turno del agente. Una conversación de 6 turnos = 6 evaluaciones | Media | `JEV_MIN_CONFIDENCE`, tope por conversación, acción `none` |
-| R6 | Escribir directo en tablas de LibreDesk (`db.py`) se rompe con migraciones | Media | Definir política explícita: ¿solo lectura? Esta feature no requiere escritura directa — usar API |
-| R7 | `POST /api/v1/ai/completion` no separa system/user roles | Baja | Aceptado en D6. Si se necesita control fino, revisar después |
-| R8 | Config del asistente cambia en LibreDesk y hub-api sirve prompt viejo (cache) | Baja | Invalidación al reiniciar, coherente con D8 |
-| R9 | El texto de tu corrección compite con el prompt original del agente en turnos siguientes | Baja | Deseado: el agente ve tu mensaje en su historial y no repregunta |
+---
 
-## 8. Open Questions (requieren decisión antes de implementar)
+## 8. Fuera de alcance
 
-- **O1 — ¿Qué va en `state` de JEV?** El último mensaje del contacto, la conversación completa, o el
-  borrador del agente. Define coste de tokens y qué se clasifica realmente. *Sugerencia: mensaje del
-  contacto + historial reciente.*
-- **O2 — ¿Umbral de confianza inicial?** V19 muestra que `confidence` 0.42 es un caso legítimo de
-  distribución dividida. *Sugerencia: 0.7, configurable.*
-- **O3 — Top-1 o multi-selección?** JEV elige UNA opción (V18). Para varias acciones hay que recorrer
-  `probabilities` e implementar la selección en código propio. *Sugerencia: top-1; mezclar
-  "pregunta el stack" + "cierra y pasa a humano" puede contradecirse en un solo prompt.*
-- **O4 — ¿`prompt_key` para `/api/v1/ai/completion`?** Hay que registrar un Editor prompt en
-  Admin → AI → Editor prompts y usar su `key`. Falta definir cuál.
-- **O5 — Tope de correcciones por conversación.** *Sugerencia: 3.*
-- **O6 — ¿Usar Companion Noul?** El doc de TypeSafe recomienda emparejar el Choice con un Noul
-  ("¿alguna acción aplica?") cuando `none of the above` puede funcionar mal. Casi gratis (preguntas
-  en paralelo, una pasada). *Sugerencia: dejarlo como mejora posterior, no en el MVP.*
-
-## 9. Fuera de alcance
-
-Explícitamente NO incluye:
-
-- Borrar o editar mensajes del agente (decidido: nada se borra).
-- Cambiar asignación de la conversación. El handoff al team lo hace LibreDesk (V6) o el tope de turnos (V5).
-- Desasignar al agente IA tras corregir. El ciclo acordado es cliente → IA → corrección → cliente → IA, indefinido.
-- Recarga en caliente de reglas. Cambio de YAML exige reinicio (D8).
-- Multiplica de réplicas / Redis. Si se escala, T4.4 se vuelve obligatorio.
-- Modificación de ninguna fuente en el repo de LibreDesk (es solo referencia de lectura).
+- Modificar cualquier archivo de `/Volumes/ExtDrive/Home/rzavala/Documents/Projects/Git/libredesk` (D9).
+- Retrieval semántico propio: requiere llave de embeddings inaccesible (V30) y no tiene caso de uso con snippets declarados por ID (D4).
+- Lectura de `ai_knowledge_base` por SQL directo (D7/T0.4), aunque la conexión ya existe (V31).
+- Migrar estado en memoria a Redis/Postgres (feature aparte; motivo por el que D5 eligió `id`).
+- Confirmación de entrega asíncrona por `message.updated` (item 4 de `FOLLOW_UP.md`, independiente).
+- Calibración de umbrales (G10).

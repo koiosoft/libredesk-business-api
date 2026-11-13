@@ -43,9 +43,6 @@ Kanboard: HUB-12 (deploy) y HUB-13 (rule de revive) cerradas. Ready y WIP vacío
    horizontalmente, eso migra a Redis o a una tabla con UNIQUE. Decidido así para evitar
    migraciones en el MVP; la consecuencia es que el contador de correcciones se reinicia.
 
-6. **Tarjeta duplicada #39**, huérfana y sin contenido, residuo de recrear HUB-13. No se borró
-   porque eliminar tarjetas es destructivo. Requiere decisión del dueño del tablero.
-
 ## Defectos encontrados durante el ciclo (todos corregidos y con regresión)
 
 Vale la pena conservarlos porque explican decisiones de diseño que hoy parecen arbitrarias:
