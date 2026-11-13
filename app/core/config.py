@@ -110,11 +110,15 @@ class Settings(BaseSettings):
     # --- Rules ---------------------------------------------------------------
     # Directory holding prompts.yaml, agents.yaml and prompt-augmenter.md.
     # Relative to the process CWD (/app in the container), where the Dockerfile
-    # copies the whole rules/ tree. Convention: rules/example is documentation
-    # only, rules/dev is this workstation's live set (gitignored), rules/prod is
-    # the reviewed production policy. Editing any rule file requires a restart;
-    # the loaded hash is exposed on GET /meta/config.
-    rules_dir: str = Field("rules/dev", alias="PROMPT_AUGMENTER_RULE_PATH")
+    # copies the whole rules/ tree. Convention: rules/example is the committed
+    # reference set, rules/dev is this workstation's live policy (gitignored by
+    # design, see .gitignore "rules/dev/*"), rules/prod is the reviewed
+    # production policy. The DEFAULT must resolve from committed files alone:
+    # pointing it at rules/dev makes a fresh clone abort in load_rules with
+    # RulesError (only .gitkeep there) before the app can start, which fails
+    # silently for anyone who forgets to set the variable. Editing any rule file
+    # requires a restart; the loaded hash is exposed on GET /meta/config.
+    rules_dir: str = Field("rules/example", alias="PROMPT_AUGMENTER_RULE_PATH")
 
     @field_validator("libredesk_api_key", "libredesk_api_secret")
     @classmethod
