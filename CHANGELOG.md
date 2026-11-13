@@ -1,6 +1,23 @@
 # Changelog
 
-## [0.2.0] - 2026-11-11
+## [0.2.0] - 2026-11-12
+### Changed
+- **Release v0.2.0**: ## [0.2.0] - 2026-11-12
+### Added
+- JEV enforcement loop: public outgoing AI-agent messages are classified with JEV Choice and, when a correction applies, a rewritten reply is generated through LibreDesk's own LLM provider and published as an additional message. Nothing is deleted or reassigned by default.
+- Contextual generation via POST /api/v1/ai/copilot (JEV_USE_COPILOT), giving the model real conversation history, the assistant persona and knowledge-base search; the flat completion path remains available behind the flag.
+- Handoff detection from conversation.unassigned plus assistant-authored private notes, and declarative post_action revive-assistant that reassigns by team after a successful publish.
+- Environment rule sets rules/{example,dev,prod} selected by PROMPT_AUGMENTER_RULE_PATH, loaded once at boot and validated fail-closed; active hash exposed on GET /meta/config.
+
+### Changed
+- Classifier state now carries the mandatory turn-structure clause and the assistant policy so actions are judged against a stated contract.
+- Concurrency moved from one thread per event to asyncio tasks bounded by a semaphore; the 202 acknowledgment still precedes every slow call.
+- LibreDesk API credentials must be ASCII (they travel in an HTTP header); non-ASCII aborts startup instead of failing per event.
+- Generation timeout is configurable (copilot measured 15-34 s).
+
+### Fixed
+- Paginated message responses were read as a list, silently returning no history so JEV answered none on every message.
+- Raw inbox channel (whatsapp) bypassed prefix normalization, discarding valid corrections after paying for classification and generation.## [0.2.0] - 2026-11-11
 ### Added
 - **JEV enforcement loop (MVP)**: every public outgoing message authored by an AI agent is classified with JEV Choice (`typesafe/jev-1.14` via OpenRouter `/api/alpha/decisions`) and, when a correction applies, a rewritten reply is generated through LibreDesk's own completion provider and published as an additional message. Nothing is deleted, nothing is reassigned; the agent keeps the conversation.
 - `rules/prompts.yaml`, `rules/agents.yaml`, `rules/prompt-augmenter.md`: closed allowlist of actions (with mandatory `none`) and per-assistant/channel prefixes. Loaded once at startup and validated fail-closed — a malformed or incomplete YAML aborts boot. Active version/hash exposed on `GET /meta/config`; `/healthz` stays data-free.
