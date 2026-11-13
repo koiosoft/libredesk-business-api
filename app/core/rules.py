@@ -102,6 +102,15 @@ class Rules:
             return None
         return self.post_actions.get(choice)
 
+    def has_post_action(self, action: str) -> bool:
+        """Whether any configured option declares this side effect.
+
+        Used by the handoff fallback in hooks: without a revive-assistant option
+        there is nothing to confirm, so reading message history would be wasted
+        work on every unassigned event.
+        """
+        return action in set(self.post_actions.values())
+
 
 def _read_yaml(path: Path) -> dict:
     if not path.exists():
