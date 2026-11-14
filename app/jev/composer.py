@@ -41,7 +41,14 @@ _ROLE = (
     "NO se cambian); prohibido copiar frases o parrafos textuales del borrador o "
     "del historial; si algo ya fue dicho y sigue siendo valido, mencionarlo en una "
     "sola linea y avanzar hacia el siguiente paso de la conversacion. Conservar el "
-    "contenido tecnico valido significa preservar el MENSAJE, no las MISMAS ORACIONES."
+    "contenido tecnico valido significa preservar el MENSAJE, no las MISMAS ORACIONES.\n"
+    # Measured 2026-11-14 (conv 12868758): obeying the rule above everywhere EXCEPT
+    # the opening -- the corrected reply reproduced the draft's first paragraph
+    # verbatim while rewording the rest (similarity 0.587 overall, 0.99 on line 1).
+    # Models anchor on the start; the constraint must name that spot explicitly.
+    "APERTURA: la primera frase del texto corregido NUNCA puede ser una copia ni "
+    "una paráfrasis casi idéntica de la primera frase del borrador; empieza directo "
+    "por el aporte nuevo."
 )
 
 _MATERIAL_LIMITS = {
