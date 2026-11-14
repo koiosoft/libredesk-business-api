@@ -111,6 +111,17 @@ class Settings(BaseSettings):
     # A fixed 20 s cut off generations that would have succeeded (observed as
     # network_error at exactly 20.0 s), so this is configurable per environment.
     jev_generation_timeout_s: int = Field(90, alias="JEV_GENERATION_TIMEOUT_S")
+    # Multi-action correction (experimental, opt-in). JEV returns a probability
+    # for EVERY criterion; with this on, secondary options join the chosen one in
+    # the ACCION block while their running mass stays under JEV_MULTI_PROB_CEILING
+    # (the last addition may cross it slightly -- that is intentional: stop when
+    # reaching the ceiling, not before). `none` never rides along: it means
+    # "publish nothing" and contradicts any action. Texts are ordered ascending by
+    # probability so the strongest -- the chosen option -- reads last (positional
+    # precedence, G6). Default false: single action, the behavior everything was
+    # calibrated with.
+    jev_multi_action: bool = Field(False, alias="JEV_MULTI_ACTION")
+    jev_multi_prob_ceiling: float = Field(0.6, alias="JEV_MULTI_PROB_CEILING")
 
 
     # --- Rules ---------------------------------------------------------------
@@ -178,7 +189,8 @@ class Settings(BaseSettings):
             )
         return model
 
-    @field_validator("jev_min_confidence", "jev_min_probability")
+    @field_validator("jev_min_confidence", "jev_min_probability",
+                     "jev_multi_prob_ceiling")
     @classmethod
     def _validate_jev_thresholds(cls, v: float) -> float:
         if not 0.0 < v <= 1.0:

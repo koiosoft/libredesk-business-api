@@ -18,7 +18,7 @@ import logging
 from typing import Any
 
 from app.core.config import Settings
-from app.core.rules import Rules
+from app.core.rules import NONE_OPTION, Rules
 from app.core.state import STATE
 from app.jev import composer
 from app.jev.classifier import Classifier
@@ -156,21 +156,65 @@ class EnforcementPipeline:
             return {**base, "outcome": "skipped", "reason": decision.reason,
                     "choice": decision.choice, "confidence": decision.confidence}
 
-        action_text = self._rules.action_text(decision.choice)
+        # --- Multi-action composition (opt-in: JEV_MULTI_ACTION, default false). --
+        # JEV's `probabilities` map covers every criterion (verified live against
+        # /api/alpha/decisions: keys == criteria keys, sums to 1). When enabled,
+        # secondary options are added in descending probability while the running
+        # mass stays below JEV_MULTI_PROB_CEILING (default 0.6): the moment the
+        # sum reaches it, no more are added ("un pelito mas" is allowed because
+        # the check runs BEFORE each addition, never after). `none` is always
+        # excluded: it means "publish nothing" and contradicts any action text.
+        choices = [decision.choice]
+        probs = decision.probabilities or {}
+        if self._settings.jev_multi_action and probs:
+            total = decision.probability
+            for prob, cand in sorted(((p, c) for c, p in probs.items()
+                                      if c != decision.choice and c != NONE_OPTION),
+                                     reverse=True):
+                if total >= self._settings.jev_multi_prob_ceiling:
+                    break
+                if self._rules.action_text(cand):      # must exist in YAML
+                    choices.append(cand)
+                    total += prob
+        # Texts are emitted ASCENDING by probability so the chosen option -- the
+        # strongest, and the one JEV actually picked -- lands LAST inside ACCION:
+        # precedence here is positional (G6), what the model reads last wins.
+        # (flag off -> choices is just [decision.choice], exactly one text). A
+        # secondary whose text is missing from YAML drops out; if the CHOSEN one
+        # is missing, fail-closed below. `choices` was built in descending order;
+        # reversed, the sequence reads weakest-first / strongest-last.
+        action_texts = []
+        snippet_ids: list[int] = []
+        for choice in reversed(choices):
+            text = self._rules.action_text(choice)
+            if not text:
+                continue
+            action_texts.append(text)
+            for sid in self._rules.snippet_ids(choice):
+                if sid not in snippet_ids:
+                    snippet_ids.append(sid)
+        action_text = "\n\n".join(action_texts)
         if not action_text:
             # Chosen action missing from the YAML: total fail-closed.
             return {**base, "outcome": "ignored", "reason": f"action_missing:{decision.choice}"}
 
-        # Only the CHOSEN option's snippets reach the corrector (D2): the rules
+        # Snippets of every composed action reach the corrector (D2): the rules
         # bind actions to compliance material, retrieval decides nothing.
-        chosen_snippets = await self._snippet_block(
-            self._rules.snippet_ids(decision.choice))
+        chosen_snippets = await self._snippet_block(snippet_ids)
         # --- Per-conversation cap BEFORE spending generation. ---
         if not STATE.take_correction_slot(
             conv, self._settings.jev_max_corrections
         ):
             return {**base, "outcome": "skipped", "reason": "correction_limit_reached",
                     "choice": decision.choice}
+
+        # Multi-action is opt-in and experimental: when it fired, the extra mass
+        # must be visible in the log to evaluate the feature offline (which
+        # secondary actions rode along, with what probabilities).
+        if len(choices) > 1:
+            log.info("multi-action conv=%s choices=%s probs=%s", conv,
+                     "->".join(reversed(choices)),
+                     {c: round(probs.get(c, 0.0), 3) for c in choices})
 
         # Generation engine (D3/G8): /ai/completion with the full composed
         # prompt is the active path -- the corrector must see exactly what the

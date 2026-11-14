@@ -879,3 +879,131 @@ async def test_first_prompt_key_contract_on_http_shapes():
     assert await run("ok") == "make_concise"
     assert await run("empty") is None
     assert await run("error") is None
+
+
+# --- Multi-action composition (JEV_MULTI_ACTION, opt-in) -------------------------
+
+def _multi_settings(**over):
+    base = dict(JEV_MULTI_ACTION="true")
+    base.update(over)
+    return Settings(**base)
+
+
+async def test_multi_action_disabled_by_default_uses_single_text(rules):
+    """Default false: exactly the chosen action, byte-for-byte as before."""
+    ld = FakeLibreDesk()
+    pipe = make_pipeline(rules, decision=ACT, libredesk=ld)   # settings default
+    out = await pipe.run(item(channel="chat"))
+    assert out["outcome"] == "corrected"
+    _, content = ld.completion_calls[0]
+    accion = content[content.index("ACCION APLICAR:"):]
+    assert rules.action_text(FIXTURE_CHOICE) in accion
+    # No other option's text leaked into the action block.
+    assert rules.action_text("handoff-too-early") not in accion
+
+
+async def test_multi_action_orders_ascending_and_excludes_none(rules):
+    """Real measured distribution shape from JEV: chosen last, none never in."""
+    dec = Decision(True, "accepted", choice="handoff-too-early",
+                   confidence=0.44, probability=0.55,
+                   probabilities={"handoff-too-early": 0.55, "none": 0.42,
+                                  FIXTURE_CHOICE: 0.02})
+    ld = FakeLibreDesk()
+    pipe = make_pipeline(rules, decision=dec, libredesk=ld,
+                         settings=_multi_settings())
+    out = await pipe.run(item(channel="chat", handed_off=True))
+    assert out["outcome"] == "corrected"
+    _, content = ld.completion_calls[0]
+    accion = content[content.index("ACCION APLICAR:"):]
+    t_chosen = accion.index(rules.action_text("handoff-too-early"))
+    t_second = accion.index(rules.action_text(FIXTURE_CHOICE))
+    assert 0 < t_second < t_chosen, "ascending: weakest first, chosen LAST"
+    assert "No intervenir" not in accion, "none text must never appear"
+
+
+async def test_multi_action_ceiling_stops_addition(rules):
+    """0.50 chosen + 0.09 next = 0.59 < 0.60 keeps going; + 0.05 would reach
+    0.64 -- but the check happens BEFORE adding, so 0.05 enters ('un pelito')
+    and 0.30 after it does NOT."""
+    dec = Decision(True, "accepted", choice="handoff-too-early",
+                   confidence=0.8, probability=0.50,
+                   probabilities={"handoff-too-early": 0.50, "none": 0.05,
+                                  FIXTURE_CHOICE: 0.45})
+    ld = FakeLibreDesk()
+    pipe = make_pipeline(rules, decision=dec, libredesk=ld,
+                         settings=_multi_settings())
+    out = await pipe.run(item(channel="chat", handed_off=True))
+    assert out["outcome"] == "corrected"
+    _, content = ld.completion_calls[0]
+    accion = content[content.index("ACCION APLICAR:"):]
+    # total=0.50 <0.60 -> add some-action(0.45) -> 0.95 ("un pelito" allowed:
+    # the check runs before summing). No more candidates exist.
+    assert rules.action_text(FIXTURE_CHOICE) in accion
+    assert accion.rindex(rules.action_text("handoff-too-early")) > \
+        accion.index(rules.action_text(FIXTURE_CHOICE)), "chosen stays last"
+
+
+async def test_multi_action_custom_ceiling_respected(rules):
+    """Same-shape distribution, ceiling 0.45: the SECONDARY never enters because
+    the initial mass (0.50) already exceeds the ceiling."""
+    dec = Decision(True, "accepted", choice="handoff-too-early",
+                   confidence=0.8, probability=0.50,
+                   probabilities={"handoff-too-early": 0.50, "none": 0.05,
+                                  FIXTURE_CHOICE: 0.45})
+    ld = FakeLibreDesk()
+    pipe = make_pipeline(rules, decision=dec, libredesk=ld,
+                         settings=_multi_settings(JEV_MULTI_PROB_CEILING="0.45"))
+    out = await pipe.run(item(channel="chat", handed_off=True))
+    assert out["outcome"] == "corrected"
+    _, content = ld.completion_calls[0]
+    accion = content[content.index("ACCION APLICAR:"):]
+    assert rules.action_text("handoff-too-early") in accion
+    assert rules.action_text(FIXTURE_CHOICE) not in accion, \
+        "0.50 initial mass already crosses a 0.45 ceiling: nothing added"
+
+
+async def test_multi_action_unions_snippets_of_all_choices(rules):
+    """handoff-too-early declares [102,101] in the fixture; when it rides along,
+    its snippets must reach the corrector too (D2 covers every composed action)."""
+    dec = Decision(True, "accepted", choice="handoff-too-early",
+                   confidence=0.9, probability=0.55,
+                   probabilities={"handoff-too-early": 0.55, "none": 0.40,
+                                  FIXTURE_CHOICE: 0.05})
+    ld = FakeLibreDesk(snippets=[
+        {"id": 101, "title": "Alfa", "content": "contenido alfa", "enabled": True,
+         "updated_at": "t"},
+        {"id": 102, "title": "Beta", "content": "contenido beta", "enabled": True,
+         "updated_at": "t"}])
+    pipe = make_pipeline(rules, decision=dec, libredesk=ld,
+                         settings=_multi_settings())
+    out = await pipe.run(item(channel="chat", handed_off=True))
+    assert out["outcome"] == "corrected"
+    _, content = ld.completion_calls[0]
+    assert "contenido alfa" in content and "contenido beta" in content
+
+
+async def test_multi_action_missing_secondary_text_is_skipped(rules, monkeypatch):
+    """A probability for an option absent from YAML drops silently; the chosen
+    one still composes normally."""
+    dec = Decision(True, "accepted", choice=FIXTURE_CHOICE,
+                   confidence=0.9, probability=0.50,
+                   probabilities={FIXTURE_CHOICE: 0.50, "ghost-option": 0.30,
+                                  "none": 0.20})
+    ld = FakeLibreDesk()
+    pipe = make_pipeline(rules, decision=dec, libredesk=ld,
+                         settings=_multi_settings())
+    out = await pipe.run(item(channel="chat"))
+    assert out["outcome"] == "corrected"
+    _, content = ld.completion_calls[0]
+    assert rules.action_text(FIXTURE_CHOICE) in content
+
+
+async def test_multi_action_without_probabilities_degrades_to_single(rules):
+    """Old doubles / missing map: no crash, just the chosen action."""
+    dec = Decision(True, "accepted", choice=FIXTURE_CHOICE,
+                   confidence=0.9, probability=0.9)   # probabilities=None
+    ld = FakeLibreDesk()
+    pipe = make_pipeline(rules, decision=dec, libredesk=ld,
+                         settings=_multi_settings())
+    out = await pipe.run(item(channel="chat"))
+    assert out["outcome"] == "corrected"
