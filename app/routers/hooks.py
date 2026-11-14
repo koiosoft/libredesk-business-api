@@ -206,6 +206,12 @@ async def handle_status_changed(body: dict, ctx: dict[str, Any]) -> None:
     p = body.get("payload", {})
     log.info("status_changed uuid=%s %s -> %s",
              p.get("conversation_uuid"), p.get("previous_status"), p.get("new_status"))
+    conv = p.get("conversation_uuid") or p.get("uuid")
+    new = str(p.get("new_status") or "").lower()
+    if conv and new in ("resolved", "closed"):
+        STATE.mark_closed(conv)
+    elif conv and new:
+        STATE.remember_open(conv)  # reopened conversations re-register
 
 
 @on("conversation.created")
@@ -227,6 +233,7 @@ async def handle_conversation_created(body: dict, ctx: dict[str, Any]) -> None:
     # old abandonment state and offer handoff-too-early to JEV.
     if conv:
         STATE.clear_handoff(conv)
+        STATE.remember_open(conv)
     channel = normalize_channel(p.get("inbox_channel"))
     if conv and channel:
         STATE.remember_channel(conv, channel)

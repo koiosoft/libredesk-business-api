@@ -4,6 +4,9 @@
 ### Added
 - Snippet coverage for the JEV decision and the correction: per-option `snippets:` ids in `rules/*/prompts.yaml`, resolved through `GET /api/v1/ai/snippets` (cached by `max(updated_at)`), injected as a dedicated block into both prompts.
 
+### Added
+- Multi-action correction (opt-in): when JEV's probability mass is genuinely split, secondary options join the chosen one inside ACCION ordered ascending by probability (chosen last, strongest position); `none` never participates. Controlled by `JEV_MULTI_ACTION` (default false) and `JEV_MULTI_PROB_CEILING` (default 0.6).
+
 ### Changed
 - Assistant policy (`instructions` + `guardrails`) reaches the classifier unclipped: the 2400-character limit dropped normative clauses and its only justification (cost) measured to fractions of a cent.
 - Corrected false documentation claims: LibreDesk DOES expose an authenticated snippets read API; direct SQL reads of `ai_knowledge_base` are now explicitly forbidden in SPEC.md §3.

@@ -28,6 +28,12 @@ question:
     Given the customer's last message and the reply published by the AI agent,
     what should the correction do to that reply?
 
+    CLOSING RULE (guardrail; it outranks every other option): if the reply under
+    review is a farewell or final conclusion of the interaction --the assistant
+    has nothing left to ask or offer after it-- the correct option is none even
+    when the text could be improved. Correcting a closing publishes a second
+    closing on top of the first and confuses the customer.
+
 options:
   # MANDATORY. Never injected as text; it is the "publish nothing" answer.
   none: >-
@@ -41,6 +47,9 @@ options:
     (for example PHP, Python, Flutter). Add the question, do not replace.
 
   # Extended form: use when the action must also DO something after publishing.
+  # Extended form: use when the action must also DO something after publishing,
+  # or must be checked against specific knowledge-base snippets. Both extra keys
+  # are optional and independent; a plain option may declare `snippets` alone.
   turn-structure-violation:
     text: >-
       The agent's reply asks two or more questions in the same message, or asks
@@ -49,6 +58,7 @@ options:
       the one with the highest value for scoping the project. Remove the rest.
     # Optional side effect applied ONLY after a successful publish. Valid values
     # today: revive-assistant. Omit the key entirely when the action is pure text.
+    # post_action: revive-assistant
 
   handoff-too-early:
     text: >-
@@ -57,4 +67,40 @@ options:
       qualifying question. Rewrite it to answer the lead's question directly,
       courteously, and end with ONE depth question about their requirement;
       remove the premature hand-off language.
+    post_action: revive-assistant
+
+  # Snippets binding: ids of LibreDesk knowledge-base entries (table
+  # ai_knowledge_base, listed by GET /api/v1/ai/snippets) that BOTH the judge
+  # and the corrector receive as mandatory compliance material. Use it when the
+  # option's rewrite must respect specific reference content ("apply snippet
+  # S10" style policies). Rules:
+  #   * positive integers, no duplicates -- format validated at boot (G5);
+  #   * existence is NEVER validated at load: the table changes without
+  #     restarting hub-api, so an id deleted later only logs a warning and is
+  #     skipped (G4), classification continues;
+  #   * disabled snippets (enabled=false) are filtered out silently at resolve;
+  #   * declared order is preserved (they read as priorities) and the whole
+  #     formatted block is capped at 8000 chars with a log line when exceeded;
+  #   * formatting is `- {title}: {content}` per line from one shared helper --
+  #     do not inline snippet text here, it lives in LibreDesk and drifts.
+  quote-official-process:
+    text: >-
+      The agent's reply describes the engagement process (discovery, sprint
+      audit, onboarding) inaccurately. Rewrite it keeping the technical answer
+      and stating the process exactly as the official snippets define it.
+    snippets: [101, 102]
+
+  # All three keys together is a legitimate shape: the option rewrites the text
+  # (text), checks it against reference content (snippets) AND changes channel
+  # state after a successful publish (post_action). This one says: when the
+  # agent gave up too early, rewrite it back to work using the official process
+  # snippets, then hand the conversation back to the bot's team so it resumes.
+  abandon-with-wrong-process:
+    text: >-
+      The agent's reply closes or transfers the conversation while also
+      misstating how Koiosoft works (invented phases, wrong durations, promises
+      outside the official process). Rewrite it to keep helping the lead,
+      describing the process exactly as the official snippets define it, and
+      end with ONE qualifying question.
+    snippets: [101, 102]
     post_action: revive-assistant

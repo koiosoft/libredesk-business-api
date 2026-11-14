@@ -28,6 +28,12 @@ question:
     Dados el ultimo mensaje del cliente y la respuesta que publico el Agente IA,
     que debe hacer la correccion sobre esa respuesta?
 
+    REGLA DE CIERRE (guardrail, prioriza sobre cualquier otra opcion): si la
+    respuesta evaluada es una despedida o conclusion final de la atencion --el
+    asistente ya no tiene nada mas que preguntar ni ofrecer despues de ella--,
+    la opcion correcta es none aunque el texto sea mejorable. Corregir un cierre
+    publica un segundo cierre encima del primero y confunde al cliente.
+
 options:
   none: >-
     Ninguna de las acciones aplica: la respuesta del Agente IA es adecuada tal

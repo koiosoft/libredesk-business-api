@@ -45,3 +45,24 @@ guardrails, unclipped -- D1/G2) + the mandatory-snippets block (union of every
 id declared across options) + chronological conversation, newest turn last. The
 classifier decides from evidence it can see; it never receives our action
 wording beyond `criteria`.
+
+## Environment switches that change composition (not rule files)
+
+These live in the environment, never here; this descriptor documents their
+effect so a reader of the rules knows which contract is active:
+
+| Variable | Default | Effect on composition |
+|---|---|---|
+| `JEV_USE_COPILOT` | `false` | engine selector, see "Generation paths" above |
+| `JEV_COMPLETION_PROMPT_KEY` | empty | key of the LibreDesk stored prompt used as system prompt by `/ai/completion`. Empty is legal but loud: startup warns and each generation falls back to the first row of `GET /api/v1/ai/prompts`, logging which one was used. Pin it in production after creating a dedicated correction prompt. |
+| `JEV_MULTI_ACTION` | `false` | with `true`, secondary options join the chosen one inside ACCION when JEV's probability mass is split. See below. |
+| `JEV_MULTI_PROB_CEILING` | `0.6` | running-mass ceiling for the previous row: candidates are taken from highest probability downward while the accumulated mass has NOT yet reached it -- the last addition may cross it slightly, by design. `none` never participates (it means "publish nothing" and contradicts any action). |
+
+Multi-action ordering inside ACCION is **ascending by probability**, so the
+option JEV actually chose -- normally the strongest -- reads LAST and wins by
+position (same principle as G6). When multi-action fires, the pipeline logs
+`multi-action conv=... choices=a->b->c probs={...}`: that log line is the
+offline evidence for deciding whether production should enable the flag. With
+the current thresholds (confidence 0.5 / probability 0.45), accepted decisions
+usually carry p >= 0.7, already over any sane ceiling -- so the feature only
+activates on genuinely divided decisions, which is its purpose, not a failure.

@@ -50,7 +50,8 @@ class FakeClassifier:
 class FakeLibreDesk:
     def __init__(self, *, assistant=None, messages=None, completion="<p>respuesta corregida</p>",
                  publish_error: str | None = None,
-                 snippets: list[dict] | None = None) -> None:
+                 snippets: list[dict] | None = None,
+                 status: str = "open") -> None:
         self._assistant = assistant if assistant is not None else AssistantConfig(
             assistant_id=AID, name="Fixture Agent", instructions="Habla de tu.",
             guardrails="No prometas plazos.", enabled=True, max_turns=6, user_id=9011,
@@ -63,6 +64,7 @@ class FakeLibreDesk:
              "meta": {"ai_assistant_id": AID}},
         ]
         self._completion = completion
+        self._conv_status = status
         self._publish_error = publish_error
         # Synthetic snippet rows only: real content lives in the database and
         # changes without restarting hub-api, so tests never wire it (conftest
@@ -77,7 +79,12 @@ class FakeLibreDesk:
 
     async def get_assistant(self, assistant_id):
         return self._assistant
-        return self._assistant
+
+    async def get_conversation(self, conversation_uuid):
+        # Default: the conversation is OPEN (nothing to skip). Tests that need
+        # the closed-conversation guard pass status="resolved"/"closed".
+        return {"uuid": conversation_uuid, "status": self._conv_status,
+                "inbox_channel": "livechat"}
 
     async def get_snippets(self):
         from app.jev.libredesk import SnippetRow
@@ -1007,3 +1014,35 @@ async def test_multi_action_without_probabilities_degrades_to_single(rules):
                          settings=_multi_settings())
     out = await pipe.run(item(channel="chat"))
     assert out["outcome"] == "corrected"
+
+
+# --- Closed-conversation guard (owner decision 2026-11-14, layers 1+2) -------
+
+async def test_closed_conversation_is_never_corrected(rules):
+    """Observed-closed state short-circuits BEFORE paying for JEV or generation."""
+    from app.core.state import STATE
+    ld = FakeLibreDesk()
+    completions_before = len(ld.completion_calls)
+    pipe = make_pipeline(rules, decision=ACT, libredesk=ld)
+    conv = item()["conversation_uuid"]
+    STATE.mark_closed(conv)
+    try:
+        out = await pipe.run(item())
+        assert out["outcome"] == "skipped" and out["reason"] == "conversation_closed"
+        assert len(ld.completion_calls) == completions_before
+    finally:
+        STATE._open.pop(conv, None); STATE._closed.pop(conv, None)
+
+
+async def test_unknown_conversation_pays_one_header_read_then_caches(rules):
+    """First event for a conversation reads the header ONCE; second is free."""
+    from app.core.state import STATE
+    ld = FakeLibreDesk()
+    reads_before = getattr(ld, "conversation_reads", None)
+    pipe = make_pipeline(rules, decision=ACT, libredesk=ld)
+    conv = item()["conversation_uuid"]
+    STATE._open.pop(conv, None); STATE._closed.pop(conv, None)
+    out1 = await pipe.run(item())
+    out2 = await pipe.run(item())
+    assert out1["outcome"] == out2["outcome"] == "corrected"
+    assert conv in STATE._open  # remembered open after the first read

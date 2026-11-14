@@ -57,6 +57,15 @@ options:
     Tecnológico.  El objetivo es, astutamente, romper el hielo que lleva al Lead a
     ser austero en sus planteamientos.
 
+  ignored-prohibitons:
+    text: >-
+      Como agente de Koiosoft, tienes estrictamente prohibido dar precios o presupuestos, 
+      estimar tiempos de entrega sin un diagnóstico técnico previo, garantizar soluciones 
+      infalibles y brindar soporte técnico, por lo que debes enfocarte exclusivamente 
+      en consultas comerciales y derivar cualquier problema operativo a los canales 
+      oficiales.
+    snippets: [5]
+
   # Criterio observable: JEV solo ve mensajes del Agente IA, nunca la actividad de
   # handoff. Por eso la opcion describe LA RESPUESTA QUE ABANDONA (despedida o
   # remision a "un humano/el equipo" sin haber resuelto ni preguntado), no el
@@ -69,4 +78,5 @@ options:
       levantamiento. Reescribe esa respuesta de modo que atienda directamente la
       pregunta del lead con la mayor cortesía y cierre con UNA sola pregunta que
       profundice en su requerimiento; elimina la despedida o remisión prematura.
+    snippets: [5]
     post_action: revive-assistant

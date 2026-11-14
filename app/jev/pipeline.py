@@ -112,14 +112,41 @@ class EnforcementPipeline:
         if not agent_text:
             return {**base, "outcome": "ignored", "reason": "empty_agent_message"}
 
+        # --- Closed-conversation guard (owner decision 2026-11-14, layer 1). ----
+        # A resolved/closed conversation is NOT correctable: measured in conv
+        # 03b9aace, "correcting" the bot's own closing message published a SECOND
+        # farewell on top of the first. The status comes from the webhook payload
+        # when it carries one; otherwise the conversation header is read ONCE and
+        # reused below for channel/contact too (no extra GET per stage). Whatever
+        # races past this read -- LibreDesk marks Resolved in the same second it
+        # posts the reply -- is covered by the closing-message guardrail that
+        # lives in question.instructions (layer 2).
+        conv_row: dict[str, Any] | None = None
+        # The webhook payload CANNOT carry this check: the envelope is
+        # {event, timestamp, payload=<message row>} (webhook.go deliverSingleWebhook)
+        # and Message.Status is the MESSAGE's delivery state (sent/received/
+        # pending, models.go:346), never the conversation's. So the guard reads
+        # cached state first (status_changed / conversation.created populate it)
+        # and pays for one header GET only when state says "never seen".
+        known = STATE.conversation_state(conv)
+        if known is False:
+            log.info("conversation %s already closed; nothing to correct", conv)
+            return {**base, "outcome": "skipped", "reason": "conversation_closed"}
+        if known is None:
+            conv_row = await self._libredesk.get_conversation(conv) or {}
+            st = str(conv_row.get("status") or "").lower()
+            if st in ("resolved", "closed"):
+                STATE.mark_closed(conv)
+                log.info("conversation %s already %s; nothing to correct", conv, st)
+                return {**base, "outcome": "skipped", "reason": "conversation_closed"}
+            STATE.remember_open(conv)
+
         # --- State for JEV: customer + reply + recent history (O1). ---
         messages = await self._libredesk.get_conversation_messages(conv)
-        conv_row: dict[str, Any] | None = None
         history = build_history(messages, exclude_uuid=msg_uuid)
         customer = pick_customer_message(history) or _text_of(
             next((m for m in reversed(messages)
-                  if _is_contact(m) and not m.get("private")), {})
-        )
+                  if _is_contact(m) and not m.get("private")), {}))
         # The assistant policy is the criterion JEV needs to decide what to
         # improve against; it is read from the live assistant (cached) and sent
         # whole (D1/G2: no character limit on policy fields).
@@ -146,7 +173,6 @@ class EnforcementPipeline:
         criteria = dict(self._rules.options)
         if not item.get("handed_off"):
             criteria.pop("handoff-too-early", None)
-
         min_conf, min_prob = self._settings.jev_thresholds
         decision = await self._classifier.classify(
             state, self._rules.question_instructions, criteria,
@@ -265,7 +291,8 @@ class EnforcementPipeline:
         # discarded AFTER paying for JEV and generation (no_prefix_for_channel:whatsapp).
         channel = normalize_channel(item.get("channel") or STATE.channel_for(conv))
         if not channel:
-            conv_row = await self._libredesk.get_conversation(conv) or {}
+            if conv_row is None:
+                conv_row = await self._libredesk.get_conversation(conv) or {}
             raw = (conv_row or {}).get("inbox_channel")
             if isinstance(raw, str) and raw:
                 channel = normalize_channel(raw)

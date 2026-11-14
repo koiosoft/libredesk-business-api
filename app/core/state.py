@@ -54,6 +54,13 @@ class HubState:
         self._seen: OrderedDict[str, bool] = OrderedDict()
         # conversation_uuid -> inbox_channel (source: conversation.created).
         self._channels: OrderedDict[str, str] = OrderedDict()
+        # conversation_uuid -> True while the assistant has the conversation
+        # open. Set on conversation.created and by live status reads; cleared
+        # when a resolved/closed status is observed (webhook or GET). Absent =
+        # unknown, which costs one header read at most once per conversation.
+        self._open: OrderedDict[str, bool] = OrderedDict()
+        # conversation_uuid -> True once a resolved/closed status was observed.
+        self._closed: OrderedDict[str, bool] = OrderedDict()
         # conversation_uuid -> True once the assistant handed the conversation to a
         # human. Observed from webhooks only; cleared by a successful revive.
         self._handoffs: OrderedDict[str, bool] = OrderedDict()
@@ -93,7 +100,46 @@ class HubState:
         with self._lock:
             return self._channels.get(conversation_uuid)
 
-    # --- Handoff tracking ---------------------------------------------------
+    # --- Open-conversation tracking (closed-conversation guard) --------------
+
+    def remember_open(self, conversation_uuid: str) -> None:
+        """(Re-)register as open. A reopened conversation leaves the closed set."""
+        if not conversation_uuid:
+            return
+        with self._lock:
+            self._closed.pop(conversation_uuid, None)
+            self._open[conversation_uuid] = True
+            self._open.move_to_end(conversation_uuid)
+            while len(self._open) > CHANNELS_MAX:
+                self._open.popitem(last=False)
+
+    def mark_closed(self, conversation_uuid: str) -> None:
+        """Observed resolved/closed: drop from _open and remember as closed.
+
+        Both maps are LRU-bounded (CHANNELS_MAX). Eviction from _open means
+        "unknown", which costs at most one header read on the next event --
+        never a false "closed". Eviction from _closed likewise degrades to
+        unknown, not to open.
+        """
+        if not conversation_uuid:
+            return
+        with self._lock:
+            self._open.pop(conversation_uuid, None)
+            self._closed[conversation_uuid] = True
+            self._closed.move_to_end(conversation_uuid)
+            while len(self._closed) > CHANNELS_MAX:
+                self._closed.popitem(last=False)
+
+    def conversation_state(self, conversation_uuid: str | None) -> bool | None:
+        """True=open, False=closed (observed), None=never seen."""
+        if not conversation_uuid:
+            return None
+        with self._lock:
+            if conversation_uuid in self._open:
+                return True
+            return False if conversation_uuid in self._closed else None
+
+
 
     def remember_handoff(self, conversation_uuid: str) -> None:
         """Mark that the AI agent gave this conversation up to a human."""

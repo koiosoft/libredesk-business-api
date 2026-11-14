@@ -51,3 +51,20 @@ confidence went from 0.26 (silently discarded) to 0.98 (correction published).
 
 If an option needs to do more than rewrite text, declare `post_action` (see
 `prompts.yaml` here). Post-actions run only after a successful publish.
+
+If the rewrite must respect specific knowledge-base content, declare
+`snippets: [id, ...]` (ids of `ai_knowledge_base`, listed by
+`GET /api/v1/ai/snippets`). Both the judge and the corrector receive them as a
+mandatory-compliance block; format is validated at boot, existence never is --
+a deleted id only logs a warning and is skipped. See the commented example in
+`prompts.yaml`. An option may declare `text` + `snippets` + `post_action`
+together: rewrite against reference material AND act on channel state.
+
+## Multi-action composition (environment, not YAML)
+
+JEV returns a probability for every option. With `JEV_MULTI_ACTION=true`,
+secondary options ride along inside the correction's ACCION block while their
+accumulated mass stays under `JEV_MULTI_PROB_CEILING` (default 0.6); texts are
+ordered ascending so the chosen option reads last and wins by position. `none`
+never participates. Nothing changes in these files: it is purely an
+environment switch, documented in `prompt-augmenter.md`.

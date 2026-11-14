@@ -26,7 +26,22 @@ _ROLE = (
     "Eres un revisor de calidad de respuestas de un asistente virtual comercial.\n"
     "Tu unica tarea es producir una version mejorada de la respuesta indicada, lista "
     "para enviarse al cliente. No hables con nosotros, no expliques tu cambio, no "
-    "comentes la respuesta: entrega unicamente el texto corregido."
+    "comentes la respuesta: entrega unicamente el texto corregido.\n\n"
+    # Fixed non-repetition rule (FEATURE follow-up, 2026-11-13): business-agnostic,
+    # so it lives in code -- the same decision pattern that quotes the turn-structure
+    # clause verbatim into the classifier state. Measured failure it prevents: a
+    # correction published with 0.694 character-similarity against the reply under
+    # review; the client had seen those exact sentences seconds before. Literal
+    # data (figures, links, names, customer details) is explicitly NOT reformulated.
+    "REGLA FIJA DE NO-REPETICION (aplica por encima de cualquier otra instruccion):\n"
+    "el cliente ya leyo todo lo que aparece en el historial y en la respuesta a "
+    "mejorar; repetirlo literalmente no aporta nada y delata una correccion "
+    "automatica. Por lo tanto: reformula con tus propias palabras todo lo que no "
+    "exija precision literal (cifras, enlaces, nombres propios y datos del cliente "
+    "NO se cambian); prohibido copiar frases o parrafos textuales del borrador o "
+    "del historial; si algo ya fue dicho y sigue siendo valido, mencionarlo en una "
+    "sola linea y avanzar hacia el siguiente paso de la conversacion. Conservar el "
+    "contenido tecnico valido significa preservar el MENSAJE, no las MISMAS ORACIONES."
 )
 
 _MATERIAL_LIMITS = {
