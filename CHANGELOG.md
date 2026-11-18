@@ -1,6 +1,17 @@
 # Changelog
 
-## [Unreleased]
+## [0.4.0] - 2026-11-18
+### Changed
+- **Release v0.4.0**: ### Added
+
+- feat(jev): add LRU-bounded closed-conversation guard, multi-action support via env vars, strict non-repetition rule, and lifecycle state tracking
+- feat(jev): introduce opt-in multi-action composition for decision corrections with configurable probability threshold
+- feat(jev): inject knowledge snippets into prompts via LibreDeskClient, restructure correction prompt to seven-block order, switch default engine to /ai/completion
+- feat(jev): revise enforcement plan to resolve policy clipping, snippet, and guardrail gaps
+
+### Fixed
+
+- fix(composer): implement APERTURA constraint to eliminate opening repetition in generated text## [Unreleased]
 ### Added
 - Snippet coverage for the JEV decision and the correction: per-option `snippets:` ids in `rules/*/prompts.yaml`, resolved through `GET /api/v1/ai/snippets` (cached by `max(updated_at)`), injected as a dedicated block into both prompts.
 
